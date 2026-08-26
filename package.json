@@ -1,0 +1,25 @@
+{
+  "name": "telegram-downloader-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A privacy-first Telegram Web media downloader for Chrome.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "npm run check && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.326",
+    "esbuild": "^0.25.9",
+    "happy-dom": "^18.0.1",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
+

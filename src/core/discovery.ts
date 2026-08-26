@@ -1,0 +1,72 @@
+import { MediaDescriptor, detectKind, hashString, mediaElementUrl, parseStreamMetadata } from "./media";
+
+export const MESSAGE_SELECTOR = [
+  "[data-message-id]",
+  "[data-mid]",
+  "[data-message]",
+  ".message",
+  ".bubble",
+  "[class*='Message']"
+].join(",");
+
+const MEDIA_SELECTOR = "img,video,audio";
+const EXCLUDED_ANCESTOR_SELECTOR = "[class*='avatar'],[class*='emoji'],[class*='sticker'],[class*='reaction']";
+const MEDIA_HOST_SELECTOR = [
+  "[data-media-id]",
+  "[class*='album-item']",
+  "[class*='grid-item']",
+  "[class*='media-container']",
+  "[class*='Media']",
+  ".media"
+].join(",");
+
+function hasMediaDimensions(element: HTMLImageElement | HTMLVideoElement | HTMLAudioElement): boolean {
+  if (element instanceof HTMLVideoElement || element instanceof HTMLAudioElement) return true;
+  const width = element.naturalWidth || element.clientWidth || Number(element.getAttribute("width")) || 0;
+  const height = element.naturalHeight || element.clientHeight || Number(element.getAttribute("height")) || 0;
+  return width >= 120 && height >= 90;
+}
+
+export function findMessageRoot(element: Element): HTMLElement | null {
+  return element.closest<HTMLElement>(MESSAGE_SELECTOR);
+}
+
+export function stableMessageId(root: HTMLElement, urls: string[] = []): string {
+  for (const attribute of ["data-message-id", "data-mid", "data-message", "data-id"]) {
+    const value = root.getAttribute(attribute);
+    if (value) return `telegram:${value}`;
+  }
+  const timestamp = root.querySelector("time")?.getAttribute("datetime") ?? root.getAttribute("data-timestamp") ?? "";
+  const text = (root.textContent ?? "").trim().slice(0, 180);
+  return `fallback:${hashString(`${location.pathname}|${timestamp}|${text}|${urls.join("|")}`)}`;
+}
+
+export function discoverMessageMedia(root: HTMLElement): MediaDescriptor[] {
+  const candidates = [...root.querySelectorAll<HTMLImageElement | HTMLVideoElement | HTMLAudioElement>(MEDIA_SELECTOR)]
+    .filter((element) => !element.closest(EXCLUDED_ANCESTOR_SELECTOR))
+    .filter(hasMediaDimensions)
+    .map((element) => ({ element, url: mediaElementUrl(element) }))
+    .filter(({ url }) => Boolean(url) && !url.startsWith("data:image/svg"));
+
+  const messageId = stableMessageId(root, candidates.map(({ url }) => url));
+  return candidates.map(({ element, url }, attachmentIndex) => {
+    const metadata = parseStreamMetadata(url);
+    const kind = detectKind(element, metadata?.mimeType);
+    const fingerprint = hashString(`${url}|${metadata?.fileName ?? ""}|${metadata?.size ?? ""}`);
+    const host = element.closest<HTMLElement>(MEDIA_HOST_SELECTOR) ?? element.parentElement ?? root;
+    return {
+      id: `${messageId}:${attachmentIndex}:${fingerprint}`,
+      messageId,
+      attachmentIndex,
+      kind,
+      url,
+      fileName: metadata?.fileName,
+      mimeType: metadata?.mimeType,
+      size: metadata?.size,
+      fingerprint,
+      element,
+      host
+    };
+  });
+}
+
