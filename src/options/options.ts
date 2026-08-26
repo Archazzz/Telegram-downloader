@@ -1,5 +1,6 @@
-import { chooseDirectory, getDestinationStatus, getDirectoryHandle, requestDirectoryPermission } from "../shared/destination";
+import { authorizeDirectory, getDestinationStatus } from "../shared/destination";
 import { DEFAULT_CONCURRENCY, MAX_CONCURRENCY, MIN_CONCURRENCY, getSettings, saveSettings } from "../shared/settings";
+import { ensureWriterDocument } from "../shared/writer";
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -35,15 +36,8 @@ async function renderDestination(): Promise<void> {
 }
 
 async function handleChooseDirectory(): Promise<void> {
-  const status = await getDestinationStatus();
-  if (status.name && status.permission === "prompt") {
-    const handle = await getDirectoryHandle();
-    if (handle && await requestDirectoryPermission(handle) === "granted") {
-      await renderDestination();
-      return;
-    }
-  }
-  await chooseDirectory();
+  await authorizeDirectory();
+  await ensureWriterDocument();
   await renderDestination();
 }
 
@@ -53,6 +47,8 @@ document.addEventListener("DOMContentLoaded", () => {
     selectedConcurrency = settings.concurrency;
     renderConcurrency();
     await renderDestination();
+    const destination = await getDestinationStatus();
+    if (destination.permission === "granted") await ensureWriterDocument();
   })();
 
   element<HTMLButtonElement>("choose-folder").addEventListener("click", async () => {
@@ -71,4 +67,3 @@ document.addEventListener("DOMContentLoaded", () => {
     window.setTimeout(() => { status.textContent = ""; }, 2500);
   });
 });
-

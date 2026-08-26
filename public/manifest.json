@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Telegram Media Downloader",
-  "version": "0.1.0",
-  "minimum_chrome_version": "111",
+  "version": "0.1.1",
+  "minimum_chrome_version": "116",
   "description": "Download visible photos and videos from Telegram Web to a folder you choose.",
   "icons": {
     "16": "icons/icon16.png",
@@ -10,7 +10,7 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": ["storage"],
+  "permissions": ["storage", "offscreen"],
   "host_permissions": [
     "https://web.telegram.org/*",
     "https://webk.telegram.org/*",

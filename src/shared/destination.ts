@@ -67,12 +67,30 @@ export async function requestDirectoryPermission(handle: FileSystemDirectoryHand
   return permissionHandle.requestPermission({ mode: "readwrite" });
 }
 
+export async function ensureDirectoryPermission(handle: FileSystemDirectoryHandle): Promise<boolean> {
+  const permission = await queryDirectoryPermission(handle);
+  if (permission === "granted") return true;
+  if (permission !== "prompt") return false;
+  try {
+    return await requestDirectoryPermission(handle) === "granted";
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "SecurityError") return false;
+    throw error;
+  }
+}
+
 export async function chooseDirectory(): Promise<FileSystemDirectoryHandle> {
   const picker = (window as PickerWindow).showDirectoryPicker;
   if (!picker) throw new Error("当前 Chrome 版本不支持目录选择");
   const handle = await picker({ id: "telegram-media-downloads", mode: "readwrite" });
   await setDirectoryHandle(handle);
   return handle;
+}
+
+export async function authorizeDirectory(): Promise<FileSystemDirectoryHandle> {
+  const existing = await getDirectoryHandle();
+  if (existing && await ensureDirectoryPermission(existing)) return existing;
+  return chooseDirectory();
 }
 
 export async function getDestinationStatus(): Promise<DestinationStatus> {
@@ -83,4 +101,3 @@ export async function getDestinationStatus(): Promise<DestinationStatus> {
   if (!handle) return { name: null, permission: "missing" };
   return { name: handle.name, permission: await queryDirectoryPermission(handle) };
 }
-

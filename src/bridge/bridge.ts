@@ -1,6 +1,4 @@
-import { buildFileName, sanitizeFileName } from "../core/media";
-import { getDirectoryHandle, getDestinationStatus, queryDirectoryPermission } from "../shared/destination";
-import { BridgeRequest, BridgeResponse } from "../shared/protocol";
+import { BridgeRequest, BridgeResponse, WRITER_CHANNEL_NAME } from "../shared/protocol";
 import { getSettings } from "../shared/settings";
 
 const ALLOWED_ORIGINS = new Set([
@@ -8,130 +6,81 @@ const ALLOWED_ORIGINS = new Set([
   "https://webk.telegram.org",
   "https://webz.telegram.org"
 ]);
-const MAX_OPEN_FILES = 5;
+const RELAY_TIMEOUT_MS = 30_000;
 
-type OpenFile = {
-  writable: FileSystemWritableFileStream;
-  bytesWritten: number;
+type PendingRelay = {
+  event: MessageEvent;
+  timeout: number;
 };
 
-const openFiles = new Map<string, OpenFile>();
+const writerChannel = new BroadcastChannel(WRITER_CHANNEL_NAME);
+const pending = new Map<string, PendingRelay>();
 
-function splitFileName(fileName: string): { stem: string; extension: string } {
-  const index = fileName.lastIndexOf(".");
-  if (index <= 0) return { stem: fileName, extension: "" };
-  return { stem: fileName.slice(0, index), extension: fileName.slice(index) };
-}
-
-async function createUniqueFile(directory: FileSystemDirectoryHandle, requestedName: string): Promise<{ fileName: string; handle: FileSystemFileHandle }> {
-  const { stem, extension } = splitFileName(requestedName);
-  for (let suffix = 0; suffix < 10_000; suffix += 1) {
-    const fileName = suffix === 0 ? requestedName : `${stem} (${suffix})${extension}`;
-    try {
-      await directory.getFileHandle(fileName);
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "NotFoundError") {
-        return { fileName, handle: await directory.getFileHandle(fileName, { create: true }) };
-      }
-      throw error;
-    }
-  }
-  throw new Error("无法生成不重复的下载文件名");
+function relayKey(requestId: string, type: string): string {
+  return `${requestId}:${type}`;
 }
 
 function respond(event: MessageEvent, response: BridgeResponse): void {
   (event.source as WindowProxy | null)?.postMessage(response, { targetOrigin: event.origin });
 }
 
-async function statusPayload() {
-  const [destination, settings] = await Promise.all([getDestinationStatus(), getSettings()]);
-  return { folderName: destination.name, permission: destination.permission, concurrency: settings.concurrency };
+async function ensureWriter(): Promise<void> {
+  const response = await chrome.runtime.sendMessage({ type: "ensure-offscreen-writer" }) as { ok?: boolean; error?: string } | undefined;
+  if (!response?.ok) throw new Error(response?.error ?? "无法启动扩展写入器");
 }
 
-async function startFile(requestId: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-  if (openFiles.size >= MAX_OPEN_FILES) throw new Error("已达到最大并发写入数量");
-  const directory = await getDirectoryHandle();
-  if (!directory) throw new Error("请先在扩展设置中选择下载目录");
-  const permission = await queryDirectoryPermission(directory);
-  if (permission !== "granted") throw new Error("下载目录需要重新授权");
-  const rawName = typeof payload.fileName === "string" ? payload.fileName : buildFileName({ id: requestId, kind: "video" });
-  const requestedName = sanitizeFileName(rawName);
-  const { fileName, handle } = await createUniqueFile(directory, requestedName);
-  const writable = await handle.createWritable({ keepExistingData: false });
-  openFiles.set(requestId, { writable, bytesWritten: 0 });
-  return { fileName };
+async function forwardRequest(event: MessageEvent, request: BridgeRequest): Promise<void> {
+  await ensureWriter();
+  const key = relayKey(request.requestId, request.type);
+  const timeout = window.setTimeout(() => {
+    pending.delete(key);
+    respond(event, {
+      source: "telegram-media-downloader-bridge",
+      type: `${request.type}:response`,
+      requestId: request.requestId,
+      ok: false,
+      error: `扩展写入器请求超时：${request.type}`
+    });
+  }, RELAY_TIMEOUT_MS);
+  pending.set(key, { event, timeout });
+  writerChannel.postMessage(request);
 }
 
-async function writeChunk(requestId: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const file = openFiles.get(requestId);
-  if (!file) throw new Error("下载文件句柄不存在或已关闭");
-  if (!(payload.chunk instanceof ArrayBuffer)) throw new Error("下载数据块格式无效");
-  const chunk = new Uint8Array(payload.chunk);
-  await file.writable.write(chunk);
-  file.bytesWritten += chunk.byteLength;
-  return { bytesWritten: file.bytesWritten };
-}
-
-async function closeFile(requestId: string): Promise<Record<string, unknown>> {
-  const file = openFiles.get(requestId);
-  if (!file) throw new Error("下载文件句柄不存在或已关闭");
-  await file.writable.close();
-  openFiles.delete(requestId);
-  return { bytesWritten: file.bytesWritten };
-}
-
-async function abortFile(requestId: string): Promise<Record<string, unknown>> {
-  const file = openFiles.get(requestId);
-  if (!file) return { aborted: false };
-  await file.writable.abort().catch(() => undefined);
-  openFiles.delete(requestId);
-  return { aborted: true };
-}
+writerChannel.addEventListener("message", (event: MessageEvent<BridgeResponse>) => {
+  const response = event.data;
+  if (response?.source !== "telegram-media-downloader-bridge" || !response.requestId || !response.type.endsWith(":response")) return;
+  const requestType = response.type.slice(0, -":response".length);
+  const key = relayKey(response.requestId, requestType);
+  const relay = pending.get(key);
+  if (!relay) return;
+  window.clearTimeout(relay.timeout);
+  pending.delete(key);
+  respond(relay.event, response);
+});
 
 window.addEventListener("message", (event: MessageEvent) => {
   if (event.source !== window.parent || !ALLOWED_ORIGINS.has(event.origin)) return;
   const request = event.data as BridgeRequest;
   if (request?.source !== "telegram-media-downloader" || typeof request.type !== "string" || typeof request.requestId !== "string") return;
-
-  void (async () => {
-    try {
-      const payload = request.payload ?? {};
-      let result: Record<string, unknown>;
-      switch (request.type) {
-        case "status": result = await statusPayload(); break;
-        case "file:start": result = await startFile(request.requestId, payload); break;
-        case "file:chunk": result = await writeChunk(request.requestId, payload); break;
-        case "file:close": result = await closeFile(request.requestId); break;
-        case "file:abort": result = await abortFile(request.requestId); break;
-        default: throw new Error(`未知桥接请求：${request.type}`);
-      }
-      respond(event, {
-        source: "telegram-media-downloader-bridge",
-        type: `${request.type}:response`,
-        requestId: request.requestId,
-        ok: true,
-        payload: result
-      });
-    } catch (error) {
-      respond(event, {
-        source: "telegram-media-downloader-bridge",
-        type: `${request.type}:response`,
-        requestId: request.requestId,
-        ok: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  })();
+  void forwardRequest(event, request).catch((error) => {
+    respond(event, {
+      source: "telegram-media-downloader-bridge",
+      type: `${request.type}:response`,
+      requestId: request.requestId,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  });
 });
 
 if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local" || !changes.concurrency) return;
-    void statusPayload().then((payload) => {
+    void getSettings().then((settings) => {
       window.parent.postMessage({
         source: "telegram-media-downloader-bridge",
         type: "settings:changed",
-        payload
+        payload: { concurrency: settings.concurrency }
       }, "*");
     });
   });

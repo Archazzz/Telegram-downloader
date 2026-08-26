@@ -12,6 +12,7 @@ const entries = {
   "content/injector": "src/content/injector.ts",
   "content/main": "src/content/main.ts",
   "bridge": "src/bridge/bridge.ts",
+  "offscreen": "src/offscreen/offscreen.ts",
   "background": "src/background.ts",
   "popup/popup": "src/popup/popup.ts",
   "options/options": "src/options/options.ts"
@@ -23,7 +24,7 @@ await build({
   bundle: true,
   format: "iife",
   platform: "browser",
-  target: "chrome111",
+  target: "chrome116",
   sourcemap: false,
   minify: false,
   logLevel: "info"
@@ -32,6 +33,7 @@ await build({
 for (const [source, destination] of [
   ["public/manifest.json", "manifest.json"],
   ["public/bridge.html", "bridge.html"],
+  ["public/offscreen.html", "offscreen.html"],
   ["public/content.css", "content/content.css"],
   ["public/popup.html", "popup/popup.html"],
   ["public/popup.css", "popup/popup.css"],

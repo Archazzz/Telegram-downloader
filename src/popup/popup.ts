@@ -1,5 +1,6 @@
-import { chooseDirectory, getDestinationStatus } from "../shared/destination";
+import { authorizeDirectory, getDestinationStatus } from "../shared/destination";
 import { getSettings } from "../shared/settings";
+import { ensureWriterDocument } from "../shared/writer";
 
 type PageStats = { mediaCount: number; messageCount: number; queueActive: number; queuePending: number };
 
@@ -39,7 +40,8 @@ document.addEventListener("DOMContentLoaded", () => {
   void Promise.all([renderDestination(), renderSettings(), renderStats()]);
   element<HTMLButtonElement>("choose-folder").addEventListener("click", async () => {
     try {
-      await chooseDirectory();
+      await authorizeDirectory();
+      await ensureWriterDocument();
       await renderDestination();
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
