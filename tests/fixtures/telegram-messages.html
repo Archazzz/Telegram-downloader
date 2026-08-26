@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Telegram message controls fixture</title>
+    <link rel="stylesheet" href="../../dist/content/content.css" />
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; padding: 42px; color: #17212b; background: #d9e8f2; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      main { width: min(680px, 100%); margin: auto; }
+      .message { width: fit-content; max-width: 620px; margin: 0 0 24px auto; padding: 8px; border-radius: 20px 20px 6px 20px; background: #e6f8d8; box-shadow: 0 2px 8px rgba(42, 75, 94, .1); }
+      .album { display: grid; grid-template-columns: repeat(2, 250px); gap: 4px; overflow: hidden; border-radius: 14px; }
+      .media { position: relative; overflow: hidden; min-height: 180px; background: #b8d7ea; }
+      .media img { display: block; width: 250px; height: 180px; object-fit: cover; }
+      .caption { margin: 8px 6px 2px; font-size: 14px; }
+      .single .media img { width: 360px; height: 210px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <article class="message" data-message-id="1001">
+        <div class="album">
+          <div class="media"><img src="media-a.svg" width="250" height="180" alt="示例山景" /></div>
+          <div class="media"><img src="media-b.svg" width="250" height="180" alt="示例湖景" /></div>
+        </div>
+        <p class="caption">周末旅途 · 两张图片</p>
+      </article>
+      <article class="message single" data-message-id="1002">
+        <div class="media"><img src="media-b.svg" width="360" height="210" alt="单张图片" /></div>
+        <p class="caption">单个附件仅显示附件下载按钮</p>
+      </article>
+    </main>
+    <script src="../../dist/content/main.js"></script>
+  </body>
+</html>

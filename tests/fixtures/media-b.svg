@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 360">
+  <defs><linearGradient id="lake" x2="0" y2="1"><stop stop-color="#d8efff"/><stop offset=".55" stop-color="#74b8dc"/><stop offset="1" stop-color="#3e779e"/></linearGradient></defs>
+  <rect width="500" height="360" fill="url(#lake)"/><circle cx="390" cy="74" r="36" fill="#fff4bd"/><path d="M0 260 110 150l65 64 88-102 118 134 54-60 65 74v100H0Z" fill="#426f78"/><path d="M0 270h500v90H0Z" fill="#4d94bb" fill-opacity=".75"/>
+</svg>
