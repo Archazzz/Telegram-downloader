@@ -1,0 +1,40 @@
+.tmd-media-host { position: relative !important; }
+
+.tmd-download-button {
+  position: absolute !important; right: 10px !important; bottom: 10px !important; z-index: 2147483000 !important;
+  width: 38px !important; height: 38px !important; padding: 9px !important; border-radius: 50% !important;
+  border: 1px solid rgba(255,255,255,.8) !important; color: #fff !important; cursor: pointer !important;
+  background: rgba(10, 91, 166, .56) !important; box-shadow: 0 2px 7px rgba(0,0,0,.14), inset 0 1px 0 rgba(255,255,255,.48) !important;
+  backdrop-filter: blur(12px) saturate(145%) !important; -webkit-backdrop-filter: blur(12px) saturate(145%) !important;
+  transition: transform .16s ease, background .16s ease !important;
+}
+.tmd-download-button:hover { transform: translateY(-1px) !important; background: rgba(10,132,255,.82) !important; }
+.tmd-download-button:focus-visible { outline: 3px solid rgba(121,197,255,.7) !important; outline-offset: 2px !important; }
+.tmd-download-button svg { width: 20px !important; height: 20px !important; fill: none !important; stroke: currentColor !important; stroke-width: 2 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
+.tmd-download-button[data-state="running"] { cursor: progress !important; background: rgba(10,132,255,.82) !important; }
+.tmd-download-button[data-state="success"] { background: rgba(31,155,98,.82) !important; }
+.tmd-download-button[data-state="error"] { background: rgba(196,65,65,.84) !important; }
+.tmd-progress-label { position: absolute !important; inset: 0 !important; display: grid !important; place-items: center !important; font: 700 10px/1 ui-sans-serif, system-ui !important; }
+
+.tmd-message-actions { display: flex !important; justify-content: flex-end !important; margin-top: 6px !important; }
+.tmd-batch-button {
+  display: inline-flex !important; align-items: center !important; gap: 6px !important; min-height: 32px !important; padding: 6px 11px !important;
+  border-radius: 13px !important; border: 1px solid rgba(121,186,237,.4) !important; color: #0876c9 !important;
+  background: rgba(238,248,255,.72) !important; box-shadow: 0 2px 7px rgba(43,101,151,.07), inset 0 1px 0 rgba(255,255,255,.72) !important;
+  backdrop-filter: blur(12px) saturate(140%) !important; -webkit-backdrop-filter: blur(12px) saturate(140%) !important;
+  font: 650 12px/1.2 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif !important;
+  cursor: pointer !important;
+}
+.tmd-batch-button:hover { background: rgba(218,240,255,.88) !important; }
+.tmd-batch-button svg { width: 15px !important; height: 15px !important; fill: none !important; stroke: currentColor !important; stroke-width: 2 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
+.tmd-batch-button[data-state="running"] { cursor: progress !important; }
+
+.tmd-toast {
+  position: fixed !important; left: 50% !important; bottom: 26px !important; z-index: 2147483647 !important; transform: translateX(-50%) !important;
+  max-width: min(420px, calc(100vw - 32px)) !important; padding: 11px 16px !important; border: 1px solid rgba(255,255,255,.72) !important;
+  border-radius: 16px !important; color: #17324d !important; background: rgba(245,251,255,.78) !important;
+  box-shadow: 0 15px 38px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.95) !important;
+  backdrop-filter: blur(20px) saturate(160%) !important; -webkit-backdrop-filter: blur(20px) saturate(160%) !important;
+  font: 600 13px/1.45 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif !important;
+}
+@media (prefers-reduced-motion: reduce) { .tmd-download-button { transition: none !important; } }
