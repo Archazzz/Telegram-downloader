@@ -1,6 +1,7 @@
 import { discoverMessageMedia, findMessageRoot, MESSAGE_SELECTOR } from "../core/discovery";
 import { MediaDescriptor, buildFileName, parseStreamMetadata } from "../core/media";
 import { DownloadQueue, QueueControl, QueueState } from "../core/queue";
+import { downloadTelegramBlob, TelegramBlob } from "../core/telegram";
 import { revealVideoSource } from "../core/viewer";
 import { DEFAULT_CONCURRENCY } from "../shared/settings";
 import { BridgeClient } from "./bridge-client";
@@ -482,20 +483,42 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
   if (status.permission !== "granted") throw new Error("下载目录需要重新授权，请点击扩展图标后重新授权一次");
 
   let resolvedMedia = media;
+  let telegramBlob: TelegramBlob | null = null;
   if (media.requiresViewer) {
-    updateDownloadState(media.id, "running", "正在打开视频…");
-    setAttachmentState(media.id, "running", "正在打开视频…");
+    updateDownloadState(media.id, "running", "正在读取 Telegram 原始视频…");
+    setAttachmentState(media.id, "running", "正在读取 Telegram 原始视频…");
     await control.waitIfPaused();
-    const url = await revealVideoSource(media, control.signal);
-    const metadata = parseStreamMetadata(url);
-    resolvedMedia = {
-      ...media,
-      url,
-      requiresViewer: false,
-      fileName: metadata?.fileName ?? media.fileName,
-      mimeType: metadata?.mimeType ?? media.mimeType ?? "video/mp4",
-      size: metadata?.size ?? media.size
-    };
+    try {
+      telegramBlob = await downloadTelegramBlob(media, control.signal, (written, total) => {
+        updateDownloadProgress(media.id, written, total);
+        if (total > 0) setAttachmentState(media.id, "running", formatProgress(written / total));
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") throw error;
+      telegramBlob = null;
+    }
+    if (telegramBlob) {
+      resolvedMedia = {
+        ...media,
+        requiresViewer: false,
+        fileName: telegramBlob.fileName ?? media.fileName,
+        mimeType: telegramBlob.mimeType ?? media.mimeType ?? "video/mp4",
+        size: telegramBlob.size
+      };
+    } else {
+      updateDownloadState(media.id, "running", "正在打开视频…");
+      setAttachmentState(media.id, "running", "正在打开视频…");
+      const url = await revealVideoSource(media, control.signal);
+      const metadata = parseStreamMetadata(url);
+      resolvedMedia = {
+        ...media,
+        url,
+        requiresViewer: false,
+        fileName: metadata?.fileName ?? media.fileName,
+        mimeType: metadata?.mimeType ?? media.mimeType ?? "video/mp4",
+        size: metadata?.size ?? media.size
+      };
+    }
     const item = downloadItems.get(media.id);
     if (item) {
       item.fileName = buildFileName(resolvedMedia);
@@ -510,10 +533,16 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
     const requestId = crypto.randomUUID();
     try {
       await bridge.startFile(requestId, fileName, resolvedMedia.mimeType);
-      await fetchIntoFile(resolvedMedia, requestId, control, (written, total) => {
+      const progress = (written: number, total: number): void => {
         updateDownloadProgress(media.id, written, total);
         if (total > 0) setAttachmentState(media.id, "running", formatProgress(written / total));
-      });
+      };
+      if (telegramBlob) {
+        const response = new Response(telegramBlob.blob);
+        await streamResponse(response, requestId, control, (written) => progress(written, telegramBlob!.size));
+      } else {
+        await fetchIntoFile(resolvedMedia, requestId, control, progress);
+      }
       await bridge.closeFile(requestId);
       return;
     } catch (error) {
