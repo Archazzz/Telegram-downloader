@@ -42,5 +42,41 @@ describe("media discovery", () => {
     root.textContent = "fallback message";
     expect(stableMessageId(root, ["a", "b"])).toBe(stableMessageId(root, ["a", "b"]));
   });
-});
 
+  it("does not register an unloaded Telegram video poster as an image", () => {
+    const message = document.createElement("article");
+    message.dataset.messageId = "poster";
+    const container = document.createElement("div");
+    container.className = "attachment media-container";
+    const poster = document.createElement("img");
+    poster.width = 640;
+    poster.height = 360;
+    poster.src = "blob:https://web.telegram.org/poster";
+    const play = document.createElement("button");
+    play.className = "video-play";
+    container.append(poster, play);
+    message.appendChild(container);
+
+    expect(discoverMessageMedia(message)).toEqual([]);
+  });
+
+  it("prefers the real video stream over its poster once loaded", () => {
+    const message = document.createElement("article");
+    message.dataset.messageId = "video";
+    const container = document.createElement("div");
+    container.className = "media-container-aspecter";
+    const poster = document.createElement("img");
+    poster.width = 640;
+    poster.height = 360;
+    poster.src = "blob:https://web.telegram.org/poster";
+    const video = document.createElement("video");
+    video.src = "https://web.telegram.org/k/stream/%7B%7D";
+    container.append(poster, video);
+    message.appendChild(container);
+
+    const discovered = discoverMessageMedia(message);
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]?.kind).toBe("video");
+    expect(discovered[0]?.element).toBe(video);
+  });
+});

@@ -27,6 +27,19 @@ function hasMediaDimensions(element: HTMLImageElement | HTMLVideoElement | HTMLA
   return width >= 120 && height >= 90;
 }
 
+function isVideoPoster(element: HTMLImageElement, root: HTMLElement): boolean {
+  const mediaContainer = element.closest<HTMLElement>(".media-container,.media-container-aspecter,.attachment");
+  if (mediaContainer?.querySelector("video,.video-play,.video-time,[class*='video-play'],[class*='video-time']")) return true;
+
+  let ancestor = element.parentElement;
+  while (ancestor) {
+    if (ancestor.classList.contains("video")) return true;
+    if (ancestor === root) break;
+    ancestor = ancestor.parentElement;
+  }
+  return false;
+}
+
 export function findMessageRoot(element: Element): HTMLElement | null {
   return element.closest<HTMLElement>(MESSAGE_SELECTOR);
 }
@@ -45,6 +58,7 @@ export function discoverMessageMedia(root: HTMLElement): MediaDescriptor[] {
   const candidates = [...root.querySelectorAll<HTMLImageElement | HTMLVideoElement | HTMLAudioElement>(MEDIA_SELECTOR)]
     .filter((element) => !element.closest(EXCLUDED_ANCESTOR_SELECTOR))
     .filter(hasMediaDimensions)
+    .filter((element) => !(element instanceof HTMLImageElement && isVideoPoster(element, root)))
     .map((element) => ({ element, url: mediaElementUrl(element) }))
     .filter(({ url }) => Boolean(url) && !url.startsWith("data:image/svg"));
 
@@ -69,4 +83,3 @@ export function discoverMessageMedia(root: HTMLElement): MediaDescriptor[] {
     };
   });
 }
-
