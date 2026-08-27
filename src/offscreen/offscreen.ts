@@ -1,4 +1,4 @@
-import { DownloadError, errorCode } from "../core/errors";
+import { DownloadError, errorCode, normalizeDownloadError } from "../core/errors";
 import { FileStore } from "../core/file-store";
 import { buildFileName } from "../core/media";
 import { getDirectoryHandle, queryDirectoryPermission } from "../shared/destination";
@@ -75,13 +75,16 @@ writerChannel.addEventListener("message", (event: MessageEvent<BridgeRequest>) =
           permission: directory ? await queryDirectoryPermission(directory) : "missing"
         }
       }))
-      .catch((error) => respond({
-        source: "telegram-media-downloader-writer",
-        type: `${request.type}:response`,
-        requestId: request.requestId,
-        ok: false,
-        error: error instanceof Error ? error.message : String(error)
-      }));
+      .catch((error) => {
+        const normalized = normalizeDownloadError(error);
+        respond({
+          source: "telegram-media-downloader-writer",
+          type: `${request.type}:response`,
+          requestId: request.requestId,
+          ok: false,
+          error: normalized.message
+        });
+      });
     return;
   }
   if (request?.source !== "telegram-media-downloader" || typeof request.type !== "string" || typeof request.requestId !== "string") return;
@@ -93,12 +96,15 @@ writerChannel.addEventListener("message", (event: MessageEvent<BridgeRequest>) =
       ok: true,
       payload
     } satisfies BridgeResponse))
-    .catch((error) => writerChannel.postMessage({
-      source: "telegram-media-downloader-bridge",
-      type: `${request.type}:response`,
-      requestId: request.requestId,
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-      errorCode: errorCode(error)
-    } satisfies BridgeResponse));
+    .catch((error) => {
+      const normalized = normalizeDownloadError(error);
+      writerChannel.postMessage({
+        source: "telegram-media-downloader-bridge",
+        type: `${request.type}:response`,
+        requestId: request.requestId,
+        ok: false,
+        error: normalized.message,
+        errorCode: errorCode(normalized)
+      } satisfies BridgeResponse);
+    });
 });

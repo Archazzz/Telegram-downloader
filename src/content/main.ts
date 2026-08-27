@@ -1,11 +1,13 @@
 import { discoverMessageMedia, findMessageRoot, MESSAGE_SELECTOR } from "../core/discovery";
 import { ChunkAccumulator } from "../core/chunks";
-import { DownloadError, errorCode, isAbortError } from "../core/errors";
+import { BatchProgress } from "../core/batch";
+import { DownloadError, errorCode, isAbortError, normalizeDownloadError } from "../core/errors";
 import { MediaDescriptor, buildFileName, mediaElementUrl, parseStreamMetadata } from "../core/media";
 import { DownloadQueue, QueueControl, QueueState } from "../core/queue";
 import { validateRangeResponse } from "../core/range";
+import { reserveMapEntry } from "../core/registry";
 import { downloadTelegramBlob, TelegramBlob } from "../core/telegram";
-import { abortableSleep } from "../core/timing";
+import { abortableSleep, withAbortableTimeout } from "../core/timing";
 import { TransferMeter, TransferPhase } from "../core/transfer";
 import { revealVideoSource } from "../core/viewer";
 import { DEFAULT_CONCURRENCY } from "../shared/settings";
@@ -39,6 +41,7 @@ const CLOSE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12
 const COLLAPSE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 6-6 6 6" /></svg>`;
 const RETRY_DELAYS = [1_000, 2_000, 4_000];
 const TELEGRAM_RETRY_DELAYS = [1_000, 2_000];
+const STREAM_INACTIVITY_TIMEOUT_MS = 60_000;
 const bridge = new BridgeClient();
 const mediaById = new Map<string, MediaDescriptor>();
 const groups = new Map<string, MessageGroup>();
@@ -278,7 +281,7 @@ function renderQueuePanel(): void {
 }
 
 function enqueueMedia(media: MediaDescriptor, batchTracker?: (state: QueueState) => void): boolean {
-  downloadItems.set(media.id, {
+  const viewItem: DownloadViewItem = {
     id: media.id,
     fileName: buildFileName(media),
     thumbnailUrl: thumbnailUrl(media),
@@ -288,19 +291,18 @@ function enqueueMedia(media: MediaDescriptor, batchTracker?: (state: QueueState)
     speedBytesPerSecond: 0,
     meter: new TransferMeter(),
     canPause: true
-  });
-  const accepted = queue.enqueue({
-    key: media.id,
-    value: media,
-    onState: (state, detail) => {
-      setAttachmentState(media.id, state, detail);
-      updateDownloadState(media.id, state, detail);
-      batchTracker?.(state);
-      postStats();
-      if (state === "error" && detail) showToast(detail);
-    }
-  });
-  if (!accepted) downloadItems.delete(media.id);
+  };
+  const accepted = reserveMapEntry(downloadItems, media.id, viewItem, () => queue.enqueue({
+      key: media.id,
+      value: media,
+      onState: (state, detail) => {
+        setAttachmentState(media.id, state, detail);
+        updateDownloadState(media.id, state, detail);
+        batchTracker?.(state);
+        postStats();
+        if (state === "error" && detail) showToast(detail);
+      }
+    }));
   scheduleQueueRender();
   return accepted;
 }
@@ -351,18 +353,22 @@ function decorateBatch(group: MessageGroup): void {
     event.preventDefault();
     event.stopPropagation();
     const snapshot = group.mediaIds.map((id) => mediaById.get(id)).filter((item): item is MediaDescriptor => Boolean(item));
-    let finished = 0;
-    let accepted = 0;
+    const progress = new BatchProgress();
     const update = (state: QueueState) => {
-      if (state === "success" || state === "error" || state === "cancelled") finished += 1;
-      button!.dataset.state = finished < accepted ? "running" : "success";
-      button!.querySelector("span")!.textContent = finished < accepted ? `下载中 ${finished}/${accepted}` : `已完成 ${finished}/${accepted}`;
+      progress.record(state);
+      const summary = progress.summary();
+      button!.dataset.state = summary.state;
+      button!.disabled = !summary.done;
+      button!.querySelector("span")!.textContent = summary.label;
     };
-    for (const media of snapshot) accepted += Number(enqueueMedia(media, update));
-    if (accepted === 0) showToast("这些文件已在下载队列中");
+    for (const media of snapshot) {
+      if (enqueueMedia(media, update)) progress.accept();
+    }
+    if (progress.total === 0) showToast("这些文件已在下载队列中");
     else {
       button!.dataset.state = "running";
-      button!.querySelector("span")!.textContent = `下载中 0/${accepted}`;
+      button!.disabled = true;
+      button!.querySelector("span")!.textContent = `下载中 0/${progress.total}`;
     }
   };
 }
@@ -475,7 +481,13 @@ async function streamResponse(
   };
   for (;;) {
     await control.waitIfPaused();
-    const { done, value } = await reader.read();
+    const { done, value } = await withAbortableTimeout(
+      reader.read(),
+      STREAM_INACTIVITY_TIMEOUT_MS,
+      control.signal,
+      new DownloadError("媒体流 60 秒没有收到新数据，请检查 VPN 或网络后重试", "NETWORK_STALLED"),
+      () => { void reader.cancel(); }
+    );
     if (done) break;
     if (!value?.byteLength) continue;
     await flush(accumulator.push(value));
@@ -532,8 +544,8 @@ async function fetchIntoFile(
 function retryable(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   if (isAbortError(error)) return false;
-  return !(["DIRECTORY_MISSING", "DIRECTORY_PERMISSION", "HTTP_CLIENT", "STALE_MEDIA_URL", "WRITER_CAPACITY"] as const).includes(
-    errorCode(error) as "DIRECTORY_MISSING" | "DIRECTORY_PERMISSION" | "HTTP_CLIENT" | "STALE_MEDIA_URL" | "WRITER_CAPACITY"
+  return !(["DIRECTORY_MISSING", "DIRECTORY_PERMISSION", "DISK_FULL", "FILESYSTEM_UNAVAILABLE", "HTTP_CLIENT", "STALE_MEDIA_URL", "WRITER_CAPACITY"] as const).includes(
+    errorCode(error) as "DIRECTORY_MISSING" | "DIRECTORY_PERMISSION" | "DISK_FULL" | "FILESYSTEM_UNAVAILABLE" | "HTTP_CLIENT" | "STALE_MEDIA_URL" | "WRITER_CAPACITY"
   );
 }
 
@@ -571,8 +583,9 @@ async function downloadTelegramWithRetry(media: MediaDescriptor, control: QueueC
       return { blob };
     } catch (error) {
       if (isAbortError(error)) throw error;
-      lastError = error;
-      if (attempt >= TELEGRAM_RETRY_DELAYS.length || !retryable(error)) break;
+      const normalized = normalizeDownloadError(error);
+      lastError = normalized;
+      if (attempt >= TELEGRAM_RETRY_DELAYS.length || !retryable(normalized)) break;
       await abortableSleep(TELEGRAM_RETRY_DELAYS[attempt]!, control.signal);
     }
   }
@@ -661,8 +674,9 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
         await bridge.closeFile(requestId);
         return;
       } catch (error) {
+        const normalized = normalizeDownloadError(error);
         await bridge.abortFile(requestId);
-        if (attempt >= RETRY_DELAYS.length || !retryable(error)) throw error;
+        if (attempt >= RETRY_DELAYS.length || !retryable(normalized)) throw normalized;
         await abortableSleep(RETRY_DELAYS[attempt]!, control.signal);
       }
     }

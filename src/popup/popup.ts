@@ -1,4 +1,5 @@
 import { authorizeDirectory, chooseDirectory, getDestinationStatus } from "../shared/destination";
+import { normalizeDownloadError } from "../core/errors";
 import { getSettings, MAX_CONCURRENCY, MIN_CONCURRENCY, saveSettings } from "../shared/settings";
 import { activateWriterDirectory, getWriterDirectoryStatus } from "../shared/writer";
 
@@ -86,7 +87,7 @@ document.addEventListener("DOMContentLoaded", () => {
       await renderDestination();
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
-      element("folder-status").textContent = error instanceof Error ? error.message : "选择目录失败";
+      element("folder-status").textContent = normalizeDownloadError(error).message;
     }
   });
 });
