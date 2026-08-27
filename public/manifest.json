@@ -12,9 +12,7 @@
   },
   "permissions": ["storage", "offscreen"],
   "host_permissions": [
-    "https://web.telegram.org/*",
-    "https://webk.telegram.org/*",
-    "https://webz.telegram.org/*"
+    "https://web.telegram.org/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -30,9 +28,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://web.telegram.org/*",
-        "https://webk.telegram.org/*",
-        "https://webz.telegram.org/*"
+        "https://web.telegram.org/k/*"
       ],
       "js": ["content/injector.js"],
       "css": ["content/content.css"],
@@ -40,9 +36,7 @@
     },
     {
       "matches": [
-        "https://web.telegram.org/*",
-        "https://webk.telegram.org/*",
-        "https://webz.telegram.org/*"
+        "https://web.telegram.org/k/*"
       ],
       "js": ["content/main.js"],
       "run_at": "document_start",
@@ -53,9 +47,7 @@
     {
       "resources": ["bridge.html", "bridge.js"],
       "matches": [
-        "https://web.telegram.org/*",
-        "https://webk.telegram.org/*",
-        "https://webz.telegram.org/*"
+        "https://web.telegram.org/k/*"
       ]
     }
   ],
