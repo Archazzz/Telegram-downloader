@@ -2,6 +2,7 @@ import { discoverMessageMedia, findMessageRoot, MESSAGE_SELECTOR } from "../core
 import { MediaDescriptor, buildFileName, parseStreamMetadata } from "../core/media";
 import { DownloadQueue, QueueControl, QueueState } from "../core/queue";
 import { downloadTelegramBlob, TelegramBlob } from "../core/telegram";
+import { TransferMeter, TransferPhase } from "../core/transfer";
 import { revealVideoSource } from "../core/viewer";
 import { DEFAULT_CONCURRENCY } from "../shared/settings";
 import { BridgeClient } from "./bridge-client";
@@ -20,6 +21,9 @@ type DownloadViewItem = {
   state: QueueState;
   written: number;
   total: number;
+  phase?: TransferPhase;
+  speedBytesPerSecond: number;
+  meter: TransferMeter;
   detail?: string;
 };
 
@@ -60,6 +64,10 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
+function formatSpeed(bytesPerSecond: number): string {
+  return `${formatBytes(bytesPerSecond)}/s`;
 }
 
 function thumbnailUrl(media: MediaDescriptor): string {
@@ -112,7 +120,12 @@ function scheduleQueueRender(): void {
 function updateDownloadState(mediaId: string, state: QueueState, detail?: string): void {
   const item = downloadItems.get(mediaId);
   if (!item) return;
+  const previousState = item.state;
   item.state = state;
+  if (state === "paused" || (previousState === "paused" && state === "running")) {
+    item.meter.reset();
+    item.speedBytesPerSecond = 0;
+  }
   if (detail) item.detail = detail;
   scheduleQueueRender();
   if (state === "success" || state === "error" || state === "cancelled") {
@@ -125,11 +138,13 @@ function updateDownloadState(mediaId: string, state: QueueState, detail?: string
   }
 }
 
-function updateDownloadProgress(mediaId: string, written: number, total: number): void {
+function updateDownloadProgress(mediaId: string, written: number, total: number, phase: TransferPhase): void {
   const item = downloadItems.get(mediaId);
   if (!item) return;
   item.written = written;
   item.total = total;
+  item.phase = phase;
+  item.speedBytesPerSecond = item.meter.update(phase, written);
   scheduleQueueRender();
 }
 
@@ -175,7 +190,9 @@ function renderQueueRow(item: DownloadViewItem): HTMLElement {
   else if (item.state === "success") detail.textContent = "下载完成";
   else {
     const progress = item.total > 0 ? `${formatBytes(item.written)} / ${formatBytes(item.total)} (${Math.round(item.written / item.total * 100)}%)` : `${formatBytes(item.written)}`;
-    detail.textContent = item.state === "paused" ? `已暂停 · ${progress}` : progress;
+    const transfer = item.state === "running" && item.speedBytesPerSecond > 0 ? ` · ${formatSpeed(item.speedBytesPerSecond)}` : "";
+    const phase = item.phase ? ` · ${item.phase}` : "";
+    detail.textContent = item.state === "paused" ? `已暂停 · ${progress}${phase}` : `${progress}${transfer}${phase}`;
   }
   const track = document.createElement("div");
   track.className = "tmd-queue-progress";
@@ -226,13 +243,16 @@ function renderQueuePanel(): void {
   const terminal = items.filter((item) => item.state === "success" || item.state === "error" || item.state === "cancelled");
   const totalBytes = items.reduce((sum, item) => sum + item.total, 0);
   const writtenBytes = items.reduce((sum, item) => sum + Math.min(item.written, item.total || item.written), 0);
+  const aggregateSpeed = running.reduce((sum, item) => sum + item.speedBytesPerSecond, 0);
 
   const header = document.createElement("header");
   const headingWrap = document.createElement("div");
   const heading = document.createElement("h2");
   heading.textContent = running.length > 0 ? "下载中" : waiting.length > 0 ? "等待下载" : "下载队列";
   const summary = document.createElement("span");
-  summary.textContent = totalBytes > 0 ? `总进度：${formatBytes(writtenBytes)} / ${formatBytes(totalBytes)} (${Math.round(writtenBytes / totalBytes * 100)}%)` : `${running.length} 个进行中 · ${waiting.length} 个等待`;
+  summary.textContent = totalBytes > 0
+    ? `总进度：${formatBytes(writtenBytes)} / ${formatBytes(totalBytes)} (${Math.round(writtenBytes / totalBytes * 100)}%)${aggregateSpeed > 0 ? ` · ${formatSpeed(aggregateSpeed)}` : ""}`
+    : `${running.length} 个进行中 · ${waiting.length} 个等待`;
   headingWrap.append(heading, summary);
   const collapse = queueActionButton(queueCollapsed ? "展开下载队列" : "收起下载队列", COLLAPSE_ICON, () => {
     queueCollapsed = !queueCollapsed;
@@ -255,7 +275,9 @@ function enqueueMedia(media: MediaDescriptor, batchTracker?: (state: QueueState)
     thumbnailUrl: thumbnailUrl(media),
     state: "queued",
     written: 0,
-    total: media.size ?? 0
+    total: media.size ?? 0,
+    speedBytesPerSecond: 0,
+    meter: new TransferMeter()
   });
   const accepted = queue.enqueue({
     key: media.id,
@@ -492,7 +514,7 @@ async function downloadTelegramWithRetry(media: MediaDescriptor, control: QueueC
     }
     try {
       const blob = await downloadTelegramBlob(media, control.signal, (written, total) => {
-        updateDownloadProgress(media.id, written, total);
+        updateDownloadProgress(media.id, written, total, "Telegram 传输");
         if (total > 0) setAttachmentState(media.id, "running", formatProgress(written / total));
       });
       return { blob };
@@ -567,7 +589,7 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
     try {
       await bridge.startFile(requestId, fileName, resolvedMedia.mimeType);
       const progress = (written: number, total: number): void => {
-        updateDownloadProgress(media.id, written, total);
+        updateDownloadProgress(media.id, written, total, telegramBlob ? "本地写入" : "网络传输");
         if (total > 0) setAttachmentState(media.id, "running", formatProgress(written / total));
       };
       if (telegramBlob) {
