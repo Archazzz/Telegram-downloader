@@ -3,14 +3,17 @@ import { MediaDescriptor } from "../src/core/media";
 import { revealVideoSource } from "../src/core/viewer";
 
 function unloadedVideo(): { media: MediaDescriptor; play: HTMLButtonElement } {
+  const attachment = document.createElement("div");
+  attachment.className = "attachment media-container";
   const host = document.createElement("div");
-  host.className = "attachment media-container";
+  host.className = "media-container-aspecter";
   const poster = document.createElement("img");
   poster.src = "blob:https://web.telegram.org/poster";
   const play = document.createElement("button");
   play.className = "video-play";
-  host.append(poster, play);
-  document.body.appendChild(host);
+  host.append(poster);
+  attachment.append(host, play);
+  document.body.appendChild(attachment);
   return {
     play,
     media: {
@@ -43,6 +46,17 @@ describe("Telegram video viewer resolver", () => {
     });
 
     await expect(revealVideoSource(media, undefined, 100)).resolves.toContain("/stream/");
+  });
+
+  it("accepts an inline video that replaces the poster inside the outer attachment", async () => {
+    const { media, play } = unloadedVideo();
+    play.addEventListener("click", () => {
+      const video = document.createElement("video");
+      video.src = "blob:https://web.telegram.org/inline-video";
+      media.host.replaceWith(video);
+    });
+
+    await expect(revealVideoSource(media, undefined, 100)).resolves.toBe("blob:https://web.telegram.org/inline-video");
   });
 
   it("does not return the poster URL when Telegram never loads a video", async () => {
