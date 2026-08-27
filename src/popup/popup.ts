@@ -1,4 +1,4 @@
-import { authorizeDirectory, getDestinationStatus } from "../shared/destination";
+import { authorizeDirectory, chooseDirectory, getDestinationStatus } from "../shared/destination";
 import { getSettings, MAX_CONCURRENCY, MIN_CONCURRENCY, saveSettings } from "../shared/settings";
 import { ensureWriterDocument } from "../shared/writer";
 
@@ -65,7 +65,9 @@ document.addEventListener("DOMContentLoaded", () => {
   void Promise.all([renderDestination(), renderSettings(), renderStats()]);
   element<HTMLButtonElement>("choose-folder").addEventListener("click", async () => {
     try {
-      await authorizeDirectory();
+      const status = await getDestinationStatus();
+      if (status.permission === "prompt") await authorizeDirectory();
+      else await chooseDirectory();
       await ensureWriterDocument();
       await renderDestination();
     } catch (error) {
