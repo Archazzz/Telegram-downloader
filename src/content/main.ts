@@ -30,6 +30,7 @@ const PLAY_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 
 const CLOSE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>`;
 const COLLAPSE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 6-6 6 6" /></svg>`;
 const RETRY_DELAYS = [1_000, 2_000, 4_000];
+const TELEGRAM_RETRY_DELAYS = [1_000, 2_000];
 const bridge = new BridgeClient();
 const mediaById = new Map<string, MediaDescriptor>();
 const groups = new Map<string, MessageGroup>();
@@ -476,6 +477,35 @@ function retryable(error: unknown): boolean {
   return true;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function downloadTelegramWithRetry(media: MediaDescriptor, control: QueueControl): Promise<{ blob: TelegramBlob | null; error?: unknown }> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= TELEGRAM_RETRY_DELAYS.length; attempt += 1) {
+    await control.waitIfPaused();
+    if (attempt > 0) {
+      const retryDetail = `Telegram 原生下载重试 ${attempt}/${TELEGRAM_RETRY_DELAYS.length}…`;
+      updateDownloadState(media.id, "running", retryDetail);
+      setAttachmentState(media.id, "running", retryDetail);
+    }
+    try {
+      const blob = await downloadTelegramBlob(media, control.signal, (written, total) => {
+        updateDownloadProgress(media.id, written, total);
+        if (total > 0) setAttachmentState(media.id, "running", formatProgress(written / total));
+      });
+      return { blob };
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") throw error;
+      lastError = error;
+      if (attempt >= TELEGRAM_RETRY_DELAYS.length || !retryable(error)) break;
+      await sleep(TELEGRAM_RETRY_DELAYS[attempt]!);
+    }
+  }
+  return { blob: null, error: lastError };
+}
+
 async function downloadWithRetry(media: MediaDescriptor, control: QueueControl): Promise<void> {
   const status = await bridge.status();
   queue.setConcurrency(status.concurrency);
@@ -484,19 +514,14 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
 
   let resolvedMedia = media;
   let telegramBlob: TelegramBlob | null = null;
+  let telegramError: unknown;
   if (media.requiresViewer) {
     updateDownloadState(media.id, "running", "正在读取 Telegram 原始视频…");
     setAttachmentState(media.id, "running", "正在读取 Telegram 原始视频…");
     await control.waitIfPaused();
-    try {
-      telegramBlob = await downloadTelegramBlob(media, control.signal, (written, total) => {
-        updateDownloadProgress(media.id, written, total);
-        if (total > 0) setAttachmentState(media.id, "running", formatProgress(written / total));
-      });
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") throw error;
-      telegramBlob = null;
-    }
+    const telegramResult = await downloadTelegramWithRetry(media, control);
+    telegramBlob = telegramResult.blob;
+    telegramError = telegramResult.error;
     if (telegramBlob) {
       resolvedMedia = {
         ...media,
@@ -508,7 +533,15 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
     } else {
       updateDownloadState(media.id, "running", "正在打开视频…");
       setAttachmentState(media.id, "running", "正在打开视频…");
-      const url = await revealVideoSource(media, control.signal);
+      let url: string;
+      try {
+        url = await revealVideoSource(media, control.signal);
+      } catch (viewerError) {
+        if (telegramError) {
+          throw new Error(`Telegram 原生下载失败：${errorMessage(telegramError)}；预览回退失败：${errorMessage(viewerError)}`);
+        }
+        throw viewerError;
+      }
       const metadata = parseStreamMetadata(url);
       resolvedMedia = {
         ...media,

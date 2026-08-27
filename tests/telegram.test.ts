@@ -55,4 +55,34 @@ describe("Telegram native media download", () => {
   it("returns null when Telegram internals are unavailable", async () => {
     await expect(downloadTelegramBlob(descriptor(), new AbortController().signal)).resolves.toBeNull();
   });
+
+  it("serializes concurrent calls to Telegram's internal download manager", async () => {
+    let active = 0;
+    let maximumActive = 0;
+    const resolvers: Array<() => void> = [];
+    const downloadMedia = vi.fn(() => new Promise<Blob>((resolve) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      resolvers.push(() => {
+        active -= 1;
+        resolve(new Blob(["video"], { type: "video/mp4" }));
+      });
+    }));
+    Object.assign(window, {
+      mtprotoMessagePort: {
+        getMessageByPeer: vi.fn().mockReturnValue({ media: { document: { mime_type: "video/mp4", size: 5 } } })
+      },
+      appDownloadManager: { downloadMedia }
+    });
+
+    const first = downloadTelegramBlob(descriptor(), new AbortController().signal);
+    const second = downloadTelegramBlob(descriptor(), new AbortController().signal);
+    await vi.waitFor(() => expect(downloadMedia).toHaveBeenCalledTimes(1));
+    resolvers.shift()?.();
+    await vi.waitFor(() => expect(downloadMedia).toHaveBeenCalledTimes(2));
+    resolvers.shift()?.();
+
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    expect(maximumActive).toBe(1);
+  });
 });
