@@ -58,15 +58,23 @@ export function discoverMessageMedia(root: HTMLElement): MediaDescriptor[] {
   const candidates = [...root.querySelectorAll<HTMLImageElement | HTMLVideoElement | HTMLAudioElement>(MEDIA_SELECTOR)]
     .filter((element) => !element.closest(EXCLUDED_ANCESTOR_SELECTOR))
     .filter(hasMediaDimensions)
-    .filter((element) => !(element instanceof HTMLImageElement && isVideoPoster(element, root)))
-    .map((element) => ({ element, url: mediaElementUrl(element) }))
+    .map((element) => {
+      const videoPoster = element instanceof HTMLImageElement && isVideoPoster(element, root);
+      if (videoPoster) {
+        const mediaHost = element.closest<HTMLElement>(MEDIA_HOST_SELECTOR);
+        const loadedVideo = mediaHost?.querySelector<HTMLVideoElement>("video");
+        if (loadedVideo && mediaElementUrl(loadedVideo)) return null;
+      }
+      return { element, url: mediaElementUrl(element), requiresViewer: videoPoster };
+    })
+    .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate))
     .filter(({ url }) => Boolean(url) && !url.startsWith("data:image/svg"));
 
   const messageId = stableMessageId(root, candidates.map(({ url }) => url));
-  return candidates.map(({ element, url }, attachmentIndex) => {
+  return candidates.map(({ element, url, requiresViewer }, attachmentIndex) => {
     const metadata = parseStreamMetadata(url);
-    const kind = detectKind(element, metadata?.mimeType);
-    const fingerprint = hashString(`${url}|${metadata?.fileName ?? ""}|${metadata?.size ?? ""}`);
+    const kind = requiresViewer ? "video" : detectKind(element, metadata?.mimeType);
+    const fingerprint = hashString(`${requiresViewer ? "video-poster" : url}|${metadata?.fileName ?? ""}|${metadata?.size ?? ""}`);
     const host = element.closest<HTMLElement>(MEDIA_HOST_SELECTOR) ?? element.parentElement ?? root;
     return {
       id: `${messageId}:${attachmentIndex}:${fingerprint}`,
@@ -77,6 +85,7 @@ export function discoverMessageMedia(root: HTMLElement): MediaDescriptor[] {
       fileName: metadata?.fileName,
       mimeType: metadata?.mimeType,
       size: metadata?.size,
+      requiresViewer,
       fingerprint,
       element,
       host

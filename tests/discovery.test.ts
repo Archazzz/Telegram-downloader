@@ -43,7 +43,7 @@ describe("media discovery", () => {
     expect(stableMessageId(root, ["a", "b"])).toBe(stableMessageId(root, ["a", "b"]));
   });
 
-  it("does not register an unloaded Telegram video poster as an image", () => {
+  it("registers an unloaded Telegram video poster as a viewer-backed video", () => {
     const message = document.createElement("article");
     message.dataset.messageId = "poster";
     const container = document.createElement("div");
@@ -57,7 +57,11 @@ describe("media discovery", () => {
     container.append(poster, play);
     message.appendChild(container);
 
-    expect(discoverMessageMedia(message)).toEqual([]);
+    const discovered = discoverMessageMedia(message);
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]?.kind).toBe("video");
+    expect(discovered[0]?.requiresViewer).toBe(true);
+    expect(discovered[0]?.element).toBe(poster);
   });
 
   it("prefers the real video stream over its poster once loaded", () => {
@@ -77,6 +81,7 @@ describe("media discovery", () => {
     const discovered = discoverMessageMedia(message);
     expect(discovered).toHaveLength(1);
     expect(discovered[0]?.kind).toBe("video");
+    expect(discovered[0]?.requiresViewer).toBe(false);
     expect(discovered[0]?.element).toBe(video);
   });
 });

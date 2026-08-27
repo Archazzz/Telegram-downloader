@@ -1,6 +1,7 @@
 import { discoverMessageMedia, findMessageRoot, MESSAGE_SELECTOR } from "../core/discovery";
-import { MediaDescriptor, buildFileName } from "../core/media";
+import { MediaDescriptor, buildFileName, parseStreamMetadata } from "../core/media";
 import { DownloadQueue, QueueControl, QueueState } from "../core/queue";
+import { revealVideoSource } from "../core/viewer";
 import { DEFAULT_CONCURRENCY } from "../shared/settings";
 import { BridgeClient } from "./bridge-client";
 
@@ -480,13 +481,36 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
   if (!status.folderName) throw new Error("请点击扩展图标并选择下载目录");
   if (status.permission !== "granted") throw new Error("下载目录需要重新授权，请点击扩展图标后重新授权一次");
 
-  const fileName = buildFileName(media);
+  let resolvedMedia = media;
+  if (media.requiresViewer) {
+    updateDownloadState(media.id, "running", "正在打开视频…");
+    setAttachmentState(media.id, "running", "正在打开视频…");
+    await control.waitIfPaused();
+    const url = await revealVideoSource(media, control.signal);
+    const metadata = parseStreamMetadata(url);
+    resolvedMedia = {
+      ...media,
+      url,
+      requiresViewer: false,
+      fileName: metadata?.fileName ?? media.fileName,
+      mimeType: metadata?.mimeType ?? media.mimeType ?? "video/mp4",
+      size: metadata?.size ?? media.size
+    };
+    const item = downloadItems.get(media.id);
+    if (item) {
+      item.fileName = buildFileName(resolvedMedia);
+      item.total = resolvedMedia.size ?? item.total;
+      scheduleQueueRender();
+    }
+  }
+
+  const fileName = buildFileName(resolvedMedia);
   for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt += 1) {
     await control.waitIfPaused();
     const requestId = crypto.randomUUID();
     try {
-      await bridge.startFile(requestId, fileName, media.mimeType);
-      await fetchIntoFile(media, requestId, control, (written, total) => {
+      await bridge.startFile(requestId, fileName, resolvedMedia.mimeType);
+      await fetchIntoFile(resolvedMedia, requestId, control, (written, total) => {
         updateDownloadProgress(media.id, written, total);
         if (total > 0) setAttachmentState(media.id, "running", formatProgress(written / total));
       });

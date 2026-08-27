@@ -9,6 +9,7 @@ export type MediaDescriptor = {
   fileName?: string;
   mimeType?: string;
   size?: number;
+  requiresViewer?: boolean;
   fingerprint: string;
   element: HTMLImageElement | HTMLVideoElement | HTMLAudioElement;
   host: HTMLElement;
@@ -91,4 +92,3 @@ export function detectKind(element: Element, mimeType?: string): MediaKind {
   if (mimeType === "image/gif") return "gif";
   return "image";
 }
-
