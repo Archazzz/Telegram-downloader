@@ -31,6 +31,53 @@
         <p class="caption">单个附件仅显示附件下载按钮</p>
       </article>
     </main>
+    <aside class="tmd-queue-panel" aria-label="下载队列">
+      <header>
+        <div><h2>下载中</h2><span>总进度：128.4 MB / 386.0 MB (33%)</span></div>
+        <button class="tmd-queue-icon-button tmd-queue-collapse" type="button" aria-label="收起下载队列"><svg viewBox="0 0 24 24"><path d="m6 14 6-6 6 6" /></svg></button>
+      </header>
+      <section class="tmd-queue-section">
+        <h3>正在下载 2</h3>
+        <div class="tmd-queue-row" data-state="running">
+          <div class="tmd-queue-preview"><img src="media-a.svg" alt="" /></div>
+          <div class="tmd-queue-row-content"><strong>summer-trip-video.mp4</strong><span>96.0 MB / 284.0 MB (34%)</span><div class="tmd-queue-progress"><i style="width:34%"></i></div></div>
+          <div class="tmd-queue-row-actions"><button class="tmd-queue-icon-button" data-action="pause" type="button" aria-label="暂停"><svg viewBox="0 0 24 24"><path d="M9 5v14M15 5v14" /></svg></button><button class="tmd-queue-icon-button" data-action="cancel" type="button" aria-label="取消"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>
+        </div>
+        <div class="tmd-queue-row" data-state="running">
+          <div class="tmd-queue-preview"><img src="media-b.svg" alt="" /></div>
+          <div class="tmd-queue-row-content"><strong>lake-panorama.jpg</strong><span>32.4 MB / 102.0 MB (32%)</span><div class="tmd-queue-progress"><i style="width:32%"></i></div></div>
+          <div class="tmd-queue-row-actions"><button class="tmd-queue-icon-button" data-action="pause" type="button" aria-label="暂停"><svg viewBox="0 0 24 24"><path d="M9 5v14M15 5v14" /></svg></button><button class="tmd-queue-icon-button" data-action="cancel" type="button" aria-label="取消"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>
+        </div>
+      </section>
+      <section class="tmd-queue-section">
+        <h3>等待中 2</h3>
+        <div class="tmd-queue-row" data-state="queued">
+          <div class="tmd-queue-preview"><img src="media-a.svg" alt="" /></div>
+          <div class="tmd-queue-row-content"><strong>telegram-photo-003.jpg</strong><span>等待下载</span><div class="tmd-queue-progress"><i style="width:0%"></i></div></div>
+          <div class="tmd-queue-row-actions"><button class="tmd-queue-icon-button" data-action="cancel" type="button" aria-label="取消"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>
+        </div>
+        <div class="tmd-queue-row" data-state="queued">
+          <div class="tmd-queue-preview"><img src="media-b.svg" alt="" /></div>
+          <div class="tmd-queue-row-content"><strong>telegram-video-004.mp4</strong><span>等待下载</span><div class="tmd-queue-progress"><i style="width:0%"></i></div></div>
+          <div class="tmd-queue-row-actions"><button class="tmd-queue-icon-button" data-action="cancel" type="button" aria-label="取消"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>
+        </div>
+      </section>
+    </aside>
     <script src="../../dist/content/main.js"></script>
+    <script>
+      document.querySelector('.tmd-queue-collapse').addEventListener('click', (event) => {
+        const panel = event.currentTarget.closest('.tmd-queue-panel');
+        panel.classList.toggle('collapsed');
+        event.currentTarget.setAttribute('aria-label', panel.classList.contains('collapsed') ? '展开下载队列' : '收起下载队列');
+      });
+      document.querySelectorAll('[data-action="pause"]').forEach((button) => button.addEventListener('click', () => {
+        const row = button.closest('.tmd-queue-row');
+        const paused = row.dataset.state === 'paused';
+        row.dataset.state = paused ? 'running' : 'paused';
+        row.querySelector('.tmd-queue-row-content span').textContent = paused ? '96.0 MB / 284.0 MB (34%)' : '已暂停 · 96.0 MB / 284.0 MB (34%)';
+        button.setAttribute('aria-label', paused ? '暂停' : '继续');
+      }));
+      document.querySelectorAll('[data-action="cancel"]').forEach((button) => button.addEventListener('click', () => button.closest('.tmd-queue-row').remove()));
+    </script>
   </body>
 </html>

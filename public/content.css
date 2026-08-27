@@ -37,4 +37,50 @@
   backdrop-filter: blur(20px) saturate(160%) !important; -webkit-backdrop-filter: blur(20px) saturate(160%) !important;
   font: 600 13px/1.45 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif !important;
 }
+
+.tmd-queue-panel {
+  position: fixed !important; top: 74px !important; right: 18px !important; z-index: 2147483400 !important;
+  width: min(380px, calc(100vw - 28px)) !important; max-height: min(680px, calc(100vh - 96px)) !important; overflow: auto !important;
+  border: 1px solid rgba(134,174,214,.34) !important; border-radius: 18px !important; color: #14233a !important;
+  background: rgba(247,252,255,.86) !important; box-shadow: 0 8px 28px rgba(39,83,125,.14), inset 0 1px 0 rgba(255,255,255,.82) !important;
+  backdrop-filter: blur(24px) saturate(145%) !important; -webkit-backdrop-filter: blur(24px) saturate(145%) !important;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif !important;
+}
+.tmd-queue-panel > header {
+  position: sticky !important; top: 0 !important; z-index: 1 !important; display: flex !important; align-items: center !important; justify-content: space-between !important;
+  min-height: 70px !important; padding: 14px 16px !important; border-bottom: 1px solid rgba(112,152,194,.22) !important;
+  background: rgba(249,253,255,.86) !important; backdrop-filter: blur(22px) saturate(140%) !important; -webkit-backdrop-filter: blur(22px) saturate(140%) !important;
+}
+.tmd-queue-panel > header h2 { margin: 0 !important; color: #14233a !important; font: 750 18px/1.2 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif !important; letter-spacing: -.02em !important; }
+.tmd-queue-panel > header span { display: block !important; margin-top: 5px !important; color: #64748b !important; font-size: 11px !important; line-height: 1.3 !important; }
+.tmd-queue-panel.collapsed { width: min(330px, calc(100vw - 28px)) !important; overflow: hidden !important; }
+.tmd-queue-panel.collapsed > header { border-bottom: 0 !important; }
+.tmd-queue-panel.collapsed .tmd-queue-collapse svg { transform: rotate(180deg) !important; }
+
+.tmd-queue-section { padding: 12px 16px 4px !important; }
+.tmd-queue-section + .tmd-queue-section { border-top: 1px solid rgba(112,152,194,.18) !important; }
+.tmd-queue-section h3 { margin: 0 0 6px !important; color: #314761 !important; font: 720 13px/1.35 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif !important; }
+.tmd-queue-row { display: grid !important; grid-template-columns: 50px minmax(0,1fr) auto !important; align-items: center !important; gap: 10px !important; min-height: 68px !important; padding: 8px 0 !important; }
+.tmd-queue-preview { width: 50px !important; height: 50px !important; display: grid !important; place-items: center !important; overflow: hidden !important; border: 1px solid rgba(119,158,197,.2) !important; border-radius: 11px !important; color: #7690aa !important; background: rgba(229,240,250,.78) !important; }
+.tmd-queue-preview img { width: 100% !important; height: 100% !important; object-fit: cover !important; }
+.tmd-queue-preview svg { width: 22px !important; height: 22px !important; fill: none !important; stroke: currentColor !important; stroke-width: 1.8 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
+.tmd-queue-row-content { min-width: 0 !important; }
+.tmd-queue-row-content strong { display: block !important; overflow: hidden !important; color: #1b2f47 !important; font-size: 12px !important; line-height: 1.35 !important; text-overflow: ellipsis !important; white-space: nowrap !important; }
+.tmd-queue-row-content span { display: block !important; margin-top: 4px !important; color: #64748b !important; font-size: 10px !important; line-height: 1.25 !important; }
+.tmd-queue-progress { height: 4px !important; margin-top: 6px !important; overflow: hidden !important; border-radius: 999px !important; background: rgba(102,148,194,.14) !important; }
+.tmd-queue-progress i { display: block !important; height: 100% !important; border-radius: inherit !important; background: #0a84ff !important; transition: width .18s ease !important; }
+.tmd-queue-row[data-state="paused"] .tmd-queue-progress i { background: #f59e0b !important; }
+.tmd-queue-row[data-state="success"] .tmd-queue-progress i { width: 100% !important; background: #28a164 !important; }
+.tmd-queue-row[data-state="error"] .tmd-queue-progress i { background: #d14b4b !important; }
+.tmd-queue-row-actions { display: flex !important; align-items: center !important; gap: 5px !important; }
+.tmd-queue-icon-button { width: 30px !important; height: 30px !important; display: grid !important; place-items: center !important; padding: 7px !important; border: 1px solid rgba(103,149,194,.3) !important; border-radius: 50% !important; color: #3e5873 !important; background: rgba(255,255,255,.58) !important; cursor: pointer !important; }
+.tmd-queue-icon-button:hover { color: #0876d1 !important; background: rgba(232,246,255,.9) !important; }
+.tmd-queue-icon-button:focus-visible { outline: 3px solid rgba(10,132,255,.26) !important; outline-offset: 1px !important; }
+.tmd-queue-icon-button svg { width: 16px !important; height: 16px !important; fill: none !important; stroke: currentColor !important; stroke-width: 1.9 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
+.tmd-queue-collapse { flex: 0 0 auto !important; }
+.tmd-queue-collapse svg { transition: transform .16s ease !important; }
+
+@media (max-width: 560px) {
+  .tmd-queue-panel { top: 62px !important; right: 8px !important; width: calc(100vw - 16px) !important; max-height: calc(100vh - 76px) !important; }
+}
 @media (prefers-reduced-motion: reduce) { .tmd-download-button { transition: none !important; } }

@@ -49,5 +49,54 @@ describe("DownloadQueue", () => {
     expect(peak).toBe(5);
     gate.resolve();
   });
-});
 
+  it("pauses and resumes an active task cooperatively", async () => {
+    const beforeChunk = deferred();
+    const states: string[] = [];
+    let completed = false;
+    const queue = new DownloadQueue<number>(async (_task, control) => {
+      await beforeChunk.promise;
+      await control.waitIfPaused();
+      completed = true;
+    });
+
+    queue.enqueue({ key: "pause-me", value: 1, onState: (state) => states.push(state) });
+    expect(queue.pause("pause-me")).toBe(true);
+    beforeChunk.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(completed).toBe(false);
+    expect(states).toContain("paused");
+
+    expect(queue.resume("pause-me")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(completed).toBe(true);
+    expect(states).toContain("success");
+  });
+
+  it("cancels waiting and active tasks without reporting an error", async () => {
+    const gate = deferred();
+    const waitingStates: string[] = [];
+    const activeStates: string[] = [];
+    const queue = new DownloadQueue<number>(async ({ key }, control) => {
+      if (key === "active") {
+        await new Promise<void>((resolve, reject) => {
+          control.signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true });
+          void gate.promise.then(resolve);
+        });
+      }
+    }, 1);
+
+    queue.enqueue({ key: "active", value: 1, onState: (state) => activeStates.push(state) });
+    queue.enqueue({ key: "waiting", value: 2, onState: (state) => waitingStates.push(state) });
+    expect(queue.queuedCount).toBe(1);
+    expect(queue.cancel("waiting")).toBe(true);
+    expect(queue.queuedCount).toBe(0);
+    expect(waitingStates.at(-1)).toBe("cancelled");
+
+    expect(queue.cancel("active")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(activeStates.at(-1)).toBe("cancelled");
+    expect(activeStates).not.toContain("error");
+    gate.resolve();
+  });
+});
