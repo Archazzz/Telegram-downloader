@@ -3,6 +3,7 @@ import { getSettings, MAX_CONCURRENCY, MIN_CONCURRENCY, saveSettings } from "../
 import { activateWriterDirectory, getWriterDirectoryStatus } from "../shared/writer";
 
 type PageStats = { mediaCount: number; messageCount: number; queueActive: number; queuePending: number };
+const RESPONSIBILITY_KEY = "responsibilityAccepted";
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -56,16 +57,26 @@ async function renderSettings(): Promise<void> {
 
 async function renderStats(): Promise<void> {
   if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) return;
-  const response = await chrome.runtime.sendMessage({ type: "get-active-stats" }) as { stats?: PageStats | null };
-  const stats = response.stats;
+  const response = await chrome.runtime.sendMessage({ type: "get-active-stats" }) as { stats?: PageStats | null } | undefined;
+  const stats = response?.stats;
   if (!stats) return;
   element("media-count").textContent = `已发现 ${stats.mediaCount} 个媒体`;
   element("media-detail").textContent = `${stats.messageCount} 条媒体消息 · ${stats.queueActive} 下载中 · ${stats.queuePending} 等待`;
   document.querySelector(".live-dot")?.classList.add("is-connected");
 }
 
+async function renderResponsibilityNotice(): Promise<void> {
+  const notice = element<HTMLElement>("responsibility-notice");
+  const stored = await chrome.storage.local.get(RESPONSIBILITY_KEY) as Record<string, unknown>;
+  notice.hidden = stored[RESPONSIBILITY_KEY] === true;
+}
+
 document.addEventListener("DOMContentLoaded", () => {
-  void Promise.all([renderDestination(), renderSettings(), renderStats()]);
+  void Promise.all([renderDestination(), renderSettings(), renderStats(), renderResponsibilityNotice()]);
+  element<HTMLButtonElement>("accept-responsibility").addEventListener("click", async () => {
+    await chrome.storage.local.set({ [RESPONSIBILITY_KEY]: true });
+    element<HTMLElement>("responsibility-notice").hidden = true;
+  });
   element<HTMLButtonElement>("choose-folder").addEventListener("click", async () => {
     try {
       const status = await getDestinationStatus();

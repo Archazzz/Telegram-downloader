@@ -74,5 +74,10 @@ h2 { margin: 0 0 7px; font-size: 13px; font-weight: 700; letter-spacing: .01em; 
 .live-dot { width: 8px; height: 8px; margin: 0; border-radius: 50%; background: #a6b4c3; box-shadow: 0 0 0 4px rgba(166,180,195,.12); }
 .live-dot.is-connected { background: #30c776; box-shadow: 0 0 0 4px rgba(48,199,118,.13); }
 
+.responsibility-notice { margin-top: 14px; padding: 10px 11px; border: 1px solid rgba(126,151,180,.22); border-radius: 13px; color: #52677f; background: rgba(255,255,255,.48); }
+.responsibility-notice[hidden] { display: none; }
+.responsibility-notice p { margin: 0; font-size: 10px; line-height: 1.55; }
+.responsibility-notice button { margin-top: 7px; padding: 0; border: 0; color: var(--accent-strong); background: transparent; font-size: 11px; font-weight: 750; cursor: pointer; }
+
 button:focus-visible { outline: 3px solid rgba(10,132,255,.26); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
