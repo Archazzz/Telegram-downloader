@@ -24,3 +24,22 @@ export type BridgeResponse = {
   payload?: Record<string, unknown>;
   error?: string;
 };
+
+export type WriterControlRequest = {
+  source: "telegram-media-downloader-popup";
+  type: "directory:activate" | "directory:status";
+  requestId: string;
+  handle?: FileSystemDirectoryHandle;
+};
+
+export type WriterControlResponse = {
+  source: "telegram-media-downloader-writer";
+  type: "directory:activate:response" | "directory:status:response";
+  requestId: string;
+  ok: boolean;
+  payload?: {
+    folderName: string | null;
+    permission: PermissionState | "missing";
+  };
+  error?: string;
+};

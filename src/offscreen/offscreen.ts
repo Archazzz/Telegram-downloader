@@ -1,6 +1,6 @@
 import { buildFileName, sanitizeFileName } from "../core/media";
-import { getDirectoryHandle, getDestinationStatus, queryDirectoryPermission } from "../shared/destination";
-import { BridgeRequest, BridgeResponse, WRITER_CHANNEL_NAME } from "../shared/protocol";
+import { getDirectoryHandle, queryDirectoryPermission } from "../shared/destination";
+import { BridgeRequest, BridgeResponse, WRITER_CHANNEL_NAME, WriterControlRequest, WriterControlResponse } from "../shared/protocol";
 import { getSettings } from "../shared/settings";
 
 const MAX_OPEN_FILES = 5;
@@ -12,6 +12,12 @@ type OpenFile = {
 
 const openFiles = new Map<string, OpenFile>();
 const writerChannel = new BroadcastChannel(WRITER_CHANNEL_NAME);
+let activeDirectory: FileSystemDirectoryHandle | null = null;
+
+async function directoryHandle(): Promise<FileSystemDirectoryHandle | null> {
+  if (!activeDirectory) activeDirectory = await getDirectoryHandle();
+  return activeDirectory;
+}
 
 function splitFileName(fileName: string): { stem: string; extension: string } {
   const index = fileName.lastIndexOf(".");
@@ -36,13 +42,14 @@ async function createUniqueFile(directory: FileSystemDirectoryHandle, requestedN
 }
 
 async function statusPayload(): Promise<Record<string, unknown>> {
-  const [destination, settings] = await Promise.all([getDestinationStatus(), getSettings()]);
-  return { folderName: destination.name, permission: destination.permission, concurrency: settings.concurrency };
+  const [directory, settings] = await Promise.all([directoryHandle(), getSettings()]);
+  const permission = directory ? await queryDirectoryPermission(directory) : "missing";
+  return { folderName: directory?.name ?? null, permission, concurrency: settings.concurrency };
 }
 
 async function startFile(requestId: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   if (openFiles.size >= MAX_OPEN_FILES) throw new Error("已达到最大并发写入数量");
-  const directory = await getDirectoryHandle();
+  const directory = await directoryHandle();
   if (!directory) throw new Error("请先在扩展设置中选择下载目录");
   const permission = await queryDirectoryPermission(directory);
   if (permission !== "granted") throw new Error("下载目录需要重新授权，请点击扩展图标后重新授权一次");
@@ -93,7 +100,33 @@ async function handleRequest(request: BridgeRequest): Promise<Record<string, unk
 }
 
 writerChannel.addEventListener("message", (event: MessageEvent<BridgeRequest>) => {
-  const request = event.data;
+  const request = event.data as BridgeRequest | WriterControlRequest;
+  if (request?.source === "telegram-media-downloader-popup") {
+    const respond = (response: WriterControlResponse): void => writerChannel.postMessage(response);
+    if (request.type === "directory:activate" && request.handle?.kind === "directory") {
+      activeDirectory = request.handle;
+    }
+    if (request.type !== "directory:activate" && request.type !== "directory:status") return;
+    void directoryHandle()
+      .then(async (directory) => respond({
+        source: "telegram-media-downloader-writer",
+        type: `${request.type}:response`,
+        requestId: request.requestId,
+        ok: true,
+        payload: {
+          folderName: directory?.name ?? null,
+          permission: directory ? await queryDirectoryPermission(directory) : "missing"
+        }
+      }))
+      .catch((error) => respond({
+        source: "telegram-media-downloader-writer",
+        type: `${request.type}:response`,
+        requestId: request.requestId,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+    return;
+  }
   if (request?.source !== "telegram-media-downloader" || typeof request.type !== "string" || typeof request.requestId !== "string") return;
   void handleRequest(request)
     .then((payload) => writerChannel.postMessage({

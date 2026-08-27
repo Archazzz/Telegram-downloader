@@ -1,6 +1,6 @@
 import { authorizeDirectory, chooseDirectory, getDestinationStatus } from "../shared/destination";
 import { getSettings, MAX_CONCURRENCY, MIN_CONCURRENCY, saveSettings } from "../shared/settings";
-import { ensureWriterDocument } from "../shared/writer";
+import { activateWriterDirectory, getWriterDirectoryStatus } from "../shared/writer";
 
 type PageStats = { mediaCount: number; messageCount: number; queueActive: number; queuePending: number };
 
@@ -11,7 +11,11 @@ function element<T extends HTMLElement>(id: string): T {
 }
 
 async function renderDestination(): Promise<void> {
-  const status = await getDestinationStatus();
+  const storedStatus = await getDestinationStatus();
+  const writerStatus = await getWriterDirectoryStatus().catch(() => null);
+  const status = writerStatus?.folderName === storedStatus.name && writerStatus.permission === "granted"
+    ? { name: writerStatus.folderName, permission: writerStatus.permission }
+    : storedStatus;
   element("folder-name").textContent = status.name ?? "尚未选择文件夹";
   const labels = {
     granted: "已授权，可直接保存",
@@ -22,7 +26,6 @@ async function renderDestination(): Promise<void> {
   } as const;
   element("folder-status").textContent = labels[status.permission];
   element<HTMLButtonElement>("choose-folder").textContent = status.permission === "missing" ? "选择" : status.permission === "prompt" ? "授权" : "更换";
-  if (status.permission === "granted") await ensureWriterDocument();
 }
 
 async function selectConcurrency(value: number): Promise<void> {
@@ -66,9 +69,9 @@ document.addEventListener("DOMContentLoaded", () => {
   element<HTMLButtonElement>("choose-folder").addEventListener("click", async () => {
     try {
       const status = await getDestinationStatus();
-      if (status.permission === "prompt") await authorizeDirectory();
-      else await chooseDirectory();
-      await ensureWriterDocument();
+      const handle = status.permission === "prompt" ? await authorizeDirectory() : await chooseDirectory();
+      const writerStatus = await activateWriterDirectory(handle);
+      if (writerStatus.permission !== "granted") throw new Error("目录已选择，但写入器未获得权限，请重新授权一次");
       await renderDestination();
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
