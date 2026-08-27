@@ -1,4 +1,5 @@
 import { BRIDGE_FRAME_ATTRIBUTE, BRIDGE_READY_ATTRIBUTE, BridgeResponse, BridgeStatus } from "../shared/protocol";
+import { DownloadError, DownloadErrorCode } from "../core/errors";
 
 type PendingRequest = {
   resolve: (payload: Record<string, unknown>) => void;
@@ -41,9 +42,11 @@ export class BridgeClient {
   }
 
   private async waitUntilReady(): Promise<void> {
-    if (this.frame?.contentWindow) return;
+    if (this.frame?.isConnected && this.frame.contentWindow) return;
+    this.frame = null;
+    this.frameOrigin = "";
     if (this.readyPromise) return this.readyPromise;
-    this.readyPromise = new Promise((resolve, reject) => {
+    const readyPromise = new Promise<void>((resolve, reject) => {
       const started = Date.now();
       const check = () => {
         const frame = document.querySelector<HTMLIFrameElement>(`iframe[${BRIDGE_FRAME_ATTRIBUTE}]`);
@@ -54,14 +57,19 @@ export class BridgeClient {
           return;
         }
         if (Date.now() - started > 10_000) {
-          reject(new Error("扩展写入桥接页未能加载，请刷新 Telegram Web"));
+          reject(new DownloadError("扩展写入桥接页未能加载，请稍后重试或刷新 Telegram Web", "BRIDGE_UNAVAILABLE"));
           return;
         }
         window.setTimeout(check, 50);
       };
       check();
     });
-    return this.readyPromise;
+    this.readyPromise = readyPromise;
+    try {
+      await readyPromise;
+    } finally {
+      if (this.readyPromise === readyPromise) this.readyPromise = null;
+    }
   }
 
   private async send(
@@ -78,7 +86,7 @@ export class BridgeClient {
     const response = new Promise<Record<string, unknown>>((resolve, reject) => {
       const timeout = window.setTimeout(() => {
         this.pending.delete(pendingKey);
-        reject(new Error(`写入桥接请求超时：${type}`));
+        reject(new DownloadError(`写入桥接请求超时：${type}`, "BRIDGE_UNAVAILABLE"));
       }, 30_000);
       this.pending.set(pendingKey, { resolve, reject, timeout });
     });
@@ -108,6 +116,8 @@ export class BridgeClient {
     window.clearTimeout(pending.timeout);
     this.pending.delete(pendingKey);
     if (response.ok) pending.resolve(response.payload ?? {});
-    else pending.reject(new Error(response.error ?? "写入桥接请求失败"));
+    else pending.reject(response.errorCode
+      ? new DownloadError(response.error ?? "写入桥接请求失败", response.errorCode as DownloadErrorCode)
+      : new Error(response.error ?? "写入桥接请求失败"));
   }
 }

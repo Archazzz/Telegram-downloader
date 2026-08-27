@@ -1,10 +1,9 @@
 import { BridgeRequest, BridgeResponse, WRITER_CHANNEL_NAME } from "../shared/protocol";
 import { getSettings } from "../shared/settings";
+import { errorCode } from "../core/errors";
 
 const ALLOWED_ORIGINS = new Set([
-  "https://web.telegram.org",
-  "https://webk.telegram.org",
-  "https://webz.telegram.org"
+  "https://web.telegram.org"
 ]);
 const RELAY_TIMEOUT_MS = 30_000;
 
@@ -15,6 +14,8 @@ type PendingRelay = {
 
 const writerChannel = new BroadcastChannel(WRITER_CHANNEL_NAME);
 const pending = new Map<string, PendingRelay>();
+let writerReady = false;
+let ensuringWriter: Promise<void> | null = null;
 
 function relayKey(requestId: string, type: string): string {
   return `${requestId}:${type}`;
@@ -25,8 +26,15 @@ function respond(event: MessageEvent, response: BridgeResponse): void {
 }
 
 async function ensureWriter(): Promise<void> {
-  const response = await chrome.runtime.sendMessage({ type: "ensure-offscreen-writer" }) as { ok?: boolean; error?: string } | undefined;
-  if (!response?.ok) throw new Error(response?.error ?? "无法启动扩展写入器");
+  if (writerReady) return;
+  if (!ensuringWriter) {
+    ensuringWriter = (async () => {
+      const response = await chrome.runtime.sendMessage({ type: "ensure-offscreen-writer" }) as { ok?: boolean; error?: string } | undefined;
+      if (!response?.ok) throw new Error(response?.error ?? "无法启动扩展写入器");
+      writerReady = true;
+    })().finally(() => { ensuringWriter = null; });
+  }
+  await ensuringWriter;
 }
 
 async function forwardRequest(event: MessageEvent, request: BridgeRequest): Promise<void> {
@@ -34,6 +42,7 @@ async function forwardRequest(event: MessageEvent, request: BridgeRequest): Prom
   const key = relayKey(request.requestId, request.type);
   const timeout = window.setTimeout(() => {
     pending.delete(key);
+    writerReady = false;
     respond(event, {
       source: "telegram-media-downloader-bridge",
       type: `${request.type}:response`,
@@ -68,7 +77,8 @@ window.addEventListener("message", (event: MessageEvent) => {
       type: `${request.type}:response`,
       requestId: request.requestId,
       ok: false,
-      error: error instanceof Error ? error.message : String(error)
+      error: error instanceof Error ? error.message : String(error),
+      errorCode: errorCode(error)
     });
   });
 });
@@ -81,9 +91,16 @@ if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
         source: "telegram-media-downloader-bridge",
         type: "settings:changed",
         payload: { concurrency: settings.concurrency }
-      }, "*");
+      }, eventOrigin());
     });
   });
 }
 
-window.parent.postMessage({ source: "telegram-media-downloader-bridge", type: "ready" }, "*");
+function eventOrigin(): string {
+  try {
+    const origin = new URL(document.referrer).origin;
+    return ALLOWED_ORIGINS.has(origin) ? origin : "https://web.telegram.org";
+  } catch {
+    return "https://web.telegram.org";
+  }
+}
