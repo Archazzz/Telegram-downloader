@@ -1,44 +1,17 @@
-import { buildFileName, sanitizeFileName } from "../core/media";
+import { DownloadError, errorCode } from "../core/errors";
+import { FileStore } from "../core/file-store";
+import { buildFileName } from "../core/media";
 import { getDirectoryHandle, queryDirectoryPermission } from "../shared/destination";
 import { BridgeRequest, BridgeResponse, WRITER_CHANNEL_NAME, WriterControlRequest, WriterControlResponse } from "../shared/protocol";
 import { getSettings } from "../shared/settings";
 
-const MAX_OPEN_FILES = 5;
-
-type OpenFile = {
-  writable: FileSystemWritableFileStream;
-  bytesWritten: number;
-};
-
-const openFiles = new Map<string, OpenFile>();
+const fileStore = new FileStore(25);
 const writerChannel = new BroadcastChannel(WRITER_CHANNEL_NAME);
 let activeDirectory: FileSystemDirectoryHandle | null = null;
 
 async function directoryHandle(): Promise<FileSystemDirectoryHandle | null> {
   if (!activeDirectory) activeDirectory = await getDirectoryHandle();
   return activeDirectory;
-}
-
-function splitFileName(fileName: string): { stem: string; extension: string } {
-  const index = fileName.lastIndexOf(".");
-  if (index <= 0) return { stem: fileName, extension: "" };
-  return { stem: fileName.slice(0, index), extension: fileName.slice(index) };
-}
-
-async function createUniqueFile(directory: FileSystemDirectoryHandle, requestedName: string): Promise<{ fileName: string; handle: FileSystemFileHandle }> {
-  const { stem, extension } = splitFileName(requestedName);
-  for (let suffix = 0; suffix < 10_000; suffix += 1) {
-    const fileName = suffix === 0 ? requestedName : `${stem} (${suffix})${extension}`;
-    try {
-      await directory.getFileHandle(fileName);
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "NotFoundError") {
-        return { fileName, handle: await directory.getFileHandle(fileName, { create: true }) };
-      }
-      throw error;
-    }
-  }
-  throw new Error("无法生成不重复的下载文件名");
 }
 
 async function statusPayload(): Promise<Record<string, unknown>> {
@@ -48,43 +21,27 @@ async function statusPayload(): Promise<Record<string, unknown>> {
 }
 
 async function startFile(requestId: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-  if (openFiles.size >= MAX_OPEN_FILES) throw new Error("已达到最大并发写入数量");
   const directory = await directoryHandle();
-  if (!directory) throw new Error("请先在扩展设置中选择下载目录");
+  if (!directory) throw new DownloadError("请先在扩展弹窗中选择下载目录", "DIRECTORY_MISSING");
   const permission = await queryDirectoryPermission(directory);
-  if (permission !== "granted") throw new Error("下载目录需要重新授权，请点击扩展图标后重新授权一次");
+  if (permission !== "granted") throw new DownloadError("下载目录需要重新授权，请点击扩展图标后重新授权一次", "DIRECTORY_PERMISSION");
   const rawName = typeof payload.fileName === "string" ? payload.fileName : buildFileName({ id: requestId, kind: "video" });
-  const requestedName = sanitizeFileName(rawName);
-  const { fileName, handle } = await createUniqueFile(directory, requestedName);
-  const writable = await handle.createWritable({ keepExistingData: false });
-  openFiles.set(requestId, { writable, bytesWritten: 0 });
+  const fileName = await fileStore.start(directory, requestId, rawName);
   return { fileName };
 }
 
 async function writeChunk(requestId: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const file = openFiles.get(requestId);
-  if (!file) throw new Error("下载文件句柄不存在或已关闭");
   if (!(payload.chunk instanceof ArrayBuffer)) throw new Error("下载数据块格式无效");
   const chunk = new Uint8Array(payload.chunk);
-  await file.writable.write(chunk);
-  file.bytesWritten += chunk.byteLength;
-  return { bytesWritten: file.bytesWritten };
+  return { bytesWritten: await fileStore.write(requestId, chunk) };
 }
 
 async function closeFile(requestId: string): Promise<Record<string, unknown>> {
-  const file = openFiles.get(requestId);
-  if (!file) throw new Error("下载文件句柄不存在或已关闭");
-  await file.writable.close();
-  openFiles.delete(requestId);
-  return { bytesWritten: file.bytesWritten };
+  return { bytesWritten: await fileStore.close(requestId) };
 }
 
 async function abortFile(requestId: string): Promise<Record<string, unknown>> {
-  const file = openFiles.get(requestId);
-  if (!file) return { aborted: false };
-  await file.writable.abort().catch(() => undefined);
-  openFiles.delete(requestId);
-  return { aborted: true };
+  return { aborted: await fileStore.abort(requestId) };
 }
 
 async function handleRequest(request: BridgeRequest): Promise<Record<string, unknown>> {
@@ -141,6 +98,7 @@ writerChannel.addEventListener("message", (event: MessageEvent<BridgeRequest>) =
       type: `${request.type}:response`,
       requestId: request.requestId,
       ok: false,
-      error: error instanceof Error ? error.message : String(error)
+      error: error instanceof Error ? error.message : String(error),
+      errorCode: errorCode(error)
     } satisfies BridgeResponse));
 });
