@@ -14,8 +14,7 @@ const entries = {
   "bridge": "src/bridge/bridge.ts",
   "offscreen": "src/offscreen/offscreen.ts",
   "background": "src/background.ts",
-  "popup/popup": "src/popup/popup.ts",
-  "options/options": "src/options/options.ts"
+  "popup/popup": "src/popup/popup.ts"
 };
 
 await build({
@@ -36,9 +35,7 @@ for (const [source, destination] of [
   ["public/offscreen.html", "offscreen.html"],
   ["public/content.css", "content/content.css"],
   ["public/popup.html", "popup/popup.html"],
-  ["public/popup.css", "popup/popup.css"],
-  ["public/options.html", "options/options.html"],
-  ["public/options.css", "options/options.css"]
+  ["public/popup.css", "popup/popup.css"]
 ]) {
   const target = path.join(dist, destination);
   await mkdir(path.dirname(target), { recursive: true });

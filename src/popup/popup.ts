@@ -1,5 +1,5 @@
 import { authorizeDirectory, getDestinationStatus } from "../shared/destination";
-import { getSettings } from "../shared/settings";
+import { getSettings, MAX_CONCURRENCY, MIN_CONCURRENCY, saveSettings } from "../shared/settings";
 import { ensureWriterDocument } from "../shared/writer";
 
 type PageStats = { mediaCount: number; messageCount: number; queueActive: number; queuePending: number };
@@ -13,13 +13,42 @@ function element<T extends HTMLElement>(id: string): T {
 async function renderDestination(): Promise<void> {
   const status = await getDestinationStatus();
   element("folder-name").textContent = status.name ?? "尚未选择文件夹";
-  const label = status.permission === "granted" ? "已授权，可直接保存" : status.permission === "prompt" ? "需要重新授权" : "请选择媒体保存位置";
-  element("folder-status").textContent = label;
+  const labels = {
+    granted: "已授权，可直接保存",
+    prompt: "需要重新授权",
+    denied: "授权已被拒绝",
+    unsupported: "当前浏览器不支持目录写入",
+    missing: "请选择媒体保存位置"
+  } as const;
+  element("folder-status").textContent = labels[status.permission];
+  element<HTMLButtonElement>("choose-folder").textContent = status.permission === "missing" ? "选择" : status.permission === "prompt" ? "授权" : "更换";
+  if (status.permission === "granted") await ensureWriterDocument();
+}
+
+async function selectConcurrency(value: number): Promise<void> {
+  await saveSettings({ concurrency: value });
+  document.querySelectorAll<HTMLButtonElement>(".segment-button").forEach((button) => {
+    const selected = Number(button.dataset.value) === value;
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
 }
 
 async function renderSettings(): Promise<void> {
   const settings = await getSettings();
-  element("concurrency-value").textContent = `${settings.concurrency} 个任务`;
+  const container = element("concurrency-options");
+  container.replaceChildren();
+  for (let value = MIN_CONCURRENCY; value <= MAX_CONCURRENCY; value += 1) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "segment-button";
+    button.dataset.value = String(value);
+    button.textContent = String(value);
+    button.setAttribute("aria-label", `同时下载 ${value} 个任务`);
+    button.addEventListener("click", () => void selectConcurrency(value));
+    container.append(button);
+  }
+  await selectConcurrency(settings.concurrency);
 }
 
 async function renderStats(): Promise<void> {
@@ -28,12 +57,8 @@ async function renderStats(): Promise<void> {
   const stats = response.stats;
   if (!stats) return;
   element("media-count").textContent = `已发现 ${stats.mediaCount} 个媒体`;
-  element("media-detail").textContent = `${stats.messageCount} 条媒体消息 · ${stats.queueActive} 下载中 · ${stats.queuePending} 排队`;
-}
-
-function openOptions(): void {
-  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) return;
-  void chrome.runtime.sendMessage({ type: "open-options" });
+  element("media-detail").textContent = `${stats.messageCount} 条媒体消息 · ${stats.queueActive} 下载中 · ${stats.queuePending} 等待`;
+  document.querySelector(".live-dot")?.classList.add("is-connected");
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -48,7 +73,4 @@ document.addEventListener("DOMContentLoaded", () => {
       element("folder-status").textContent = error instanceof Error ? error.message : "选择目录失败";
     }
   });
-  for (const id of ["open-settings", "open-settings-icon", "open-settings-concurrency"]) {
-    element<HTMLButtonElement>(id).addEventListener("click", openOptions);
-  }
 });
