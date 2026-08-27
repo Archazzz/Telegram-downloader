@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DownloadQueue } from "../src/core/queue";
 
 function deferred() {
@@ -98,5 +98,24 @@ describe("DownloadQueue", () => {
     expect(activeStates.at(-1)).toBe("cancelled");
     expect(activeStates).not.toContain("error");
     gate.resolve();
+  });
+
+  it("conserves terminal states across 500 mixed queue tasks", async () => {
+    const gate = deferred();
+    const finalStates = new Map<string, string>();
+    const queue = new DownloadQueue<number>(async ({ value }) => {
+      await gate.promise;
+      if (value % 17 === 0) throw new Error("injected failure");
+    }, 5);
+
+    for (let value = 0; value < 500; value += 1) {
+      queue.enqueue({ key: String(value), value, onState: (state) => finalStates.set(String(value), state) });
+    }
+    for (let value = 10; value < 500; value += 10) queue.cancel(String(value));
+    gate.resolve();
+    await vi.waitFor(() => expect(queue.activeCount + queue.queuedCount).toBe(0));
+
+    expect(finalStates.size).toBe(500);
+    expect([...finalStates.values()].filter((state) => ["success", "error", "cancelled"].includes(state))).toHaveLength(500);
   });
 });

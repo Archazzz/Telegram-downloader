@@ -1,7 +1,11 @@
 import { discoverMessageMedia, findMessageRoot, MESSAGE_SELECTOR } from "../core/discovery";
-import { MediaDescriptor, buildFileName, parseStreamMetadata } from "../core/media";
+import { ChunkAccumulator } from "../core/chunks";
+import { DownloadError, errorCode, isAbortError } from "../core/errors";
+import { MediaDescriptor, buildFileName, mediaElementUrl, parseStreamMetadata } from "../core/media";
 import { DownloadQueue, QueueControl, QueueState } from "../core/queue";
+import { validateRangeResponse } from "../core/range";
 import { downloadTelegramBlob, TelegramBlob } from "../core/telegram";
+import { abortableSleep } from "../core/timing";
 import { TransferMeter, TransferPhase } from "../core/transfer";
 import { revealVideoSource } from "../core/viewer";
 import { DEFAULT_CONCURRENCY } from "../shared/settings";
@@ -11,7 +15,6 @@ type MessageGroup = {
   id: string;
   root: HTMLElement;
   mediaIds: string[];
-  lastSeen: number;
 };
 
 type DownloadViewItem = {
@@ -24,6 +27,7 @@ type DownloadViewItem = {
   phase?: TransferPhase;
   speedBytesPerSecond: number;
   meter: TransferMeter;
+  canPause: boolean;
   detail?: string;
 };
 
@@ -38,6 +42,7 @@ const TELEGRAM_RETRY_DELAYS = [1_000, 2_000];
 const bridge = new BridgeClient();
 const mediaById = new Map<string, MediaDescriptor>();
 const groups = new Map<string, MessageGroup>();
+const groupIdByRoot = new WeakMap<HTMLElement, string>();
 const downloadItems = new Map<string, DownloadViewItem>();
 const pendingRoots = new Set<HTMLElement>();
 let scanScheduled = false;
@@ -50,10 +55,6 @@ bridge.onSettingsChanged = (status) => {
   queue.setConcurrency(status.concurrency);
   postStats();
 };
-
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
-}
 
 function formatProgress(value: number): string {
   return `${Math.min(99, Math.max(1, Math.round(value * 100)))}%`;
@@ -144,7 +145,15 @@ function updateDownloadProgress(mediaId: string, written: number, total: number,
   item.written = written;
   item.total = total;
   item.phase = phase;
+  item.canPause = phase !== "Telegram 传输";
   item.speedBytesPerSecond = item.meter.update(phase, written);
+  scheduleQueueRender();
+}
+
+function setDownloadPausable(mediaId: string, canPause: boolean): void {
+  const item = downloadItems.get(mediaId);
+  if (!item) return;
+  item.canPause = canPause;
   scheduleQueueRender();
 }
 
@@ -203,7 +212,7 @@ function renderQueueRow(item: DownloadViewItem): HTMLElement {
 
   const actions = document.createElement("div");
   actions.className = "tmd-queue-row-actions";
-  if (item.state === "running") actions.appendChild(queueActionButton("暂停", PAUSE_ICON, () => queue.pause(item.id)));
+  if (item.state === "running" && item.canPause) actions.appendChild(queueActionButton("暂停", PAUSE_ICON, () => queue.pause(item.id)));
   if (item.state === "paused") actions.appendChild(queueActionButton("继续", PLAY_ICON, () => queue.resume(item.id)));
   if (item.state === "queued" || item.state === "running" || item.state === "paused") {
     actions.appendChild(queueActionButton("取消", CLOSE_ICON, () => queue.cancel(item.id)));
@@ -277,7 +286,8 @@ function enqueueMedia(media: MediaDescriptor, batchTracker?: (state: QueueState)
     written: 0,
     total: media.size ?? 0,
     speedBytesPerSecond: 0,
-    meter: new TransferMeter()
+    meter: new TransferMeter(),
+    canPause: true
   });
   const accepted = queue.enqueue({
     key: media.id,
@@ -362,14 +372,28 @@ function processMessage(root: HTMLElement): void {
   const discovered = discoverMessageMedia(root);
   if (discovered.length === 0) return;
   const groupId = discovered[0]!.messageId;
+  const previousGroupId = groupIdByRoot.get(root);
+  if (previousGroupId && previousGroupId !== groupId) {
+    const previousGroup = groups.get(previousGroupId);
+    groups.delete(previousGroupId);
+    previousGroup?.mediaIds.forEach((id) => {
+      if (!downloadItems.has(id)) mediaById.delete(id);
+    });
+  }
+  const previousIds = new Set(groups.get(groupId)?.mediaIds ?? []);
   const mediaIds: string[] = [];
   for (const media of discovered) {
     mediaById.set(media.id, media);
     mediaIds.push(media.id);
+    previousIds.delete(media.id);
     decorateAttachment(media);
   }
-  const group = { id: groupId, root, mediaIds, lastSeen: Date.now() };
+  previousIds.forEach((id) => {
+    if (!downloadItems.has(id)) mediaById.delete(id);
+  });
+  const group = { id: groupId, root, mediaIds };
   groups.set(groupId, group);
+  groupIdByRoot.set(root, groupId);
   decorateBatch(group);
 }
 
@@ -397,12 +421,17 @@ function scheduleNode(node: Node): void {
 }
 
 function pruneRegistry(): void {
+  const retainedMediaIds = new Set(downloadItems.keys());
   for (const [groupId, group] of groups) {
-    if (group.root.isConnected) continue;
-    groups.delete(groupId);
-    group.mediaIds.forEach((id) => {
-      if (!downloadItems.has(id)) mediaById.delete(id);
-    });
+    if (group.root.isConnected) {
+      group.mediaIds.forEach((id) => retainedMediaIds.add(id));
+    } else {
+      groups.delete(groupId);
+      groupIdByRoot.delete(group.root);
+    }
+  }
+  for (const mediaId of mediaById.keys()) {
+    if (!retainedMediaIds.has(mediaId)) mediaById.delete(mediaId);
   }
   postStats();
 }
@@ -420,13 +449,6 @@ function postStats(): void {
   }, window.location.origin);
 }
 
-function parseContentRange(value: string | null): { start: number; end: number; total: number } | null {
-  if (!value) return null;
-  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value.trim());
-  if (!match) throw new Error(`服务器返回了无效的 Content-Range：${value}`);
-  return { start: Number(match[1]), end: Number(match[2]), total: Number(match[3]) };
-}
-
 async function streamResponse(
   response: Response,
   fileRequestId: string,
@@ -442,17 +464,23 @@ async function streamResponse(
     return buffer.byteLength;
   }
   const reader = response.body.getReader();
+  const accumulator = new ChunkAccumulator();
   let written = 0;
+  const flush = async (chunk: Uint8Array<ArrayBuffer> | null): Promise<void> => {
+    if (!chunk) return;
+    if (control.isCancelled) throw new DOMException("下载已取消", "AbortError");
+    await bridge.writeChunk(fileRequestId, chunk);
+    written += chunk.byteLength;
+    onProgress(written);
+  };
   for (;;) {
     await control.waitIfPaused();
     const { done, value } = await reader.read();
     if (done) break;
     if (!value?.byteLength) continue;
-    if (control.isCancelled) throw new DOMException("下载已取消", "AbortError");
-    await bridge.writeChunk(fileRequestId, value);
-    written += value.byteLength;
-    onProgress(written);
+    await flush(accumulator.push(value));
   }
+  await flush(accumulator.flush());
   return written;
 }
 
@@ -463,8 +491,19 @@ async function fetchIntoFile(
   onProgress: (written: number, total: number) => void
 ): Promise<void> {
   if (/^(blob:|data:)/.test(media.url)) {
-    const response = await fetch(media.url, { signal: control.signal });
-    if (!response.ok) throw new Error(`媒体请求失败：HTTP ${response.status}`);
+    let response: Response;
+    try {
+      response = await fetch(media.url, { signal: control.signal });
+    } catch (error) {
+      if (media.url.startsWith("blob:") && !isAbortError(error)) {
+        throw new DownloadError("媒体地址已失效，请让该消息重新进入视口后重试", "STALE_MEDIA_URL", { cause: error });
+      }
+      throw error;
+    }
+    if (!response.ok) {
+      const code = response.status >= 400 && response.status < 500 ? "HTTP_CLIENT" : "HTTP_SERVER";
+      throw new DownloadError(`媒体请求失败：HTTP ${response.status}`, code);
+    }
     const total = media.size ?? (Number(response.headers.get("Content-Length")) || 0);
     await streamResponse(response, requestId, control, (written) => onProgress(written, total));
     return;
@@ -475,10 +514,8 @@ async function fetchIntoFile(
   for (;;) {
     await control.waitIfPaused();
     const response = await fetch(media.url, { headers: { Range: `bytes=${offset}-` }, credentials: "include", signal: control.signal });
-    if (response.status !== 200 && response.status !== 206) throw new Error(`媒体请求失败：HTTP ${response.status}`);
-    const range = parseContentRange(response.headers.get("Content-Range"));
+    const range = validateRangeResponse(offset, response.status, response.headers.get("Content-Range"));
     if (range) {
-      if (range.start !== offset) throw new Error("服务器返回的分块起点不正确");
       total = range.total;
     } else if (!total) {
       total = Number(response.headers.get("Content-Length")) || 0;
@@ -494,13 +531,27 @@ async function fetchIntoFile(
 
 function retryable(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  if (error instanceof DOMException && error.name === "AbortError") return false;
-  if (/目录|授权|取消|HTTP 4\d\d/.test(error.message)) return false;
-  return true;
+  if (isAbortError(error)) return false;
+  return !(["DIRECTORY_MISSING", "DIRECTORY_PERMISSION", "HTTP_CLIENT", "STALE_MEDIA_URL", "WRITER_CAPACITY"] as const).includes(
+    errorCode(error) as "DIRECTORY_MISSING" | "DIRECTORY_PERMISSION" | "HTTP_CLIENT" | "STALE_MEDIA_URL" | "WRITER_CAPACITY"
+  );
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function refreshMediaSource(media: MediaDescriptor): MediaDescriptor {
+  const currentUrl = mediaElementUrl(media.element);
+  if (!currentUrl || currentUrl === media.url) return media;
+  const metadata = parseStreamMetadata(currentUrl);
+  return {
+    ...media,
+    url: currentUrl,
+    fileName: metadata?.fileName ?? media.fileName,
+    mimeType: metadata?.mimeType ?? media.mimeType,
+    size: metadata?.size ?? media.size
+  };
 }
 
 async function downloadTelegramWithRetry(media: MediaDescriptor, control: QueueControl): Promise<{ blob: TelegramBlob | null; error?: unknown }> {
@@ -519,10 +570,10 @@ async function downloadTelegramWithRetry(media: MediaDescriptor, control: QueueC
       });
       return { blob };
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") throw error;
+      if (isAbortError(error)) throw error;
       lastError = error;
       if (attempt >= TELEGRAM_RETRY_DELAYS.length || !retryable(error)) break;
-      await sleep(TELEGRAM_RETRY_DELAYS[attempt]!);
+      await abortableSleep(TELEGRAM_RETRY_DELAYS[attempt]!, control.signal);
     }
   }
   return { blob: null, error: lastError };
@@ -537,7 +588,9 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
   let resolvedMedia = media;
   let telegramBlob: TelegramBlob | null = null;
   let telegramError: unknown;
+  let dismissViewer: (() => void) | undefined;
   if (media.requiresViewer) {
+    setDownloadPausable(media.id, false);
     updateDownloadState(media.id, "running", "正在读取 Telegram 原始视频…");
     setAttachmentState(media.id, "running", "正在读取 Telegram 原始视频…");
     await control.waitIfPaused();
@@ -557,7 +610,9 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
       setAttachmentState(media.id, "running", "正在打开视频…");
       let url: string;
       try {
-        url = await revealVideoSource(media, control.signal);
+        const revealed = await revealVideoSource(media, control.signal);
+        url = revealed.url;
+        dismissViewer = revealed.dismiss;
       } catch (viewerError) {
         if (telegramError) {
           throw new Error(`Telegram 原生下载失败：${errorMessage(telegramError)}；预览回退失败：${errorMessage(viewerError)}`);
@@ -582,29 +637,37 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
     }
   }
 
+  if (!telegramBlob) {
+    resolvedMedia = refreshMediaSource(resolvedMedia);
+  }
   const fileName = buildFileName(resolvedMedia);
-  for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt += 1) {
-    await control.waitIfPaused();
-    const requestId = crypto.randomUUID();
-    try {
-      await bridge.startFile(requestId, fileName, resolvedMedia.mimeType);
-      const progress = (written: number, total: number): void => {
-        updateDownloadProgress(media.id, written, total, telegramBlob ? "本地写入" : "网络传输");
-        if (total > 0) setAttachmentState(media.id, "running", formatProgress(written / total));
-      };
-      if (telegramBlob) {
-        const response = new Response(telegramBlob.blob);
-        await streamResponse(response, requestId, control, (written) => progress(written, telegramBlob!.size));
-      } else {
-        await fetchIntoFile(resolvedMedia, requestId, control, progress);
+  try {
+    for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt += 1) {
+      await control.waitIfPaused();
+      if (!telegramBlob) resolvedMedia = refreshMediaSource(resolvedMedia);
+      const requestId = crypto.randomUUID();
+      try {
+        await bridge.startFile(requestId, fileName, resolvedMedia.mimeType);
+        const progress = (written: number, total: number): void => {
+          updateDownloadProgress(media.id, written, total, telegramBlob ? "本地写入" : "网络传输");
+          if (total > 0) setAttachmentState(media.id, "running", formatProgress(written / total));
+        };
+        if (telegramBlob) {
+          const response = new Response(telegramBlob.blob);
+          await streamResponse(response, requestId, control, (written) => progress(written, telegramBlob!.size));
+        } else {
+          await fetchIntoFile(resolvedMedia, requestId, control, progress);
+        }
+        await bridge.closeFile(requestId);
+        return;
+      } catch (error) {
+        await bridge.abortFile(requestId);
+        if (attempt >= RETRY_DELAYS.length || !retryable(error)) throw error;
+        await abortableSleep(RETRY_DELAYS[attempt]!, control.signal);
       }
-      await bridge.closeFile(requestId);
-      return;
-    } catch (error) {
-      await bridge.abortFile(requestId);
-      if (attempt >= RETRY_DELAYS.length || !retryable(error)) throw error;
-      await sleep(RETRY_DELAYS[attempt]!);
     }
+  } finally {
+    dismissViewer?.();
   }
 }
 

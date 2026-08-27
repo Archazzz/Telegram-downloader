@@ -23,6 +23,7 @@ function descriptor(): MediaDescriptor {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   document.body.replaceChildren();
   delete (window as unknown as Record<string, unknown>).mtprotoMessagePort;
   delete (window as unknown as Record<string, unknown>).appDownloadManager;
@@ -84,5 +85,27 @@ describe("Telegram native media download", () => {
 
     await expect(Promise.all([first, second])).resolves.toHaveLength(2);
     expect(maximumActive).toBe(1);
+  });
+
+  it("releases the native slot after an inactivity timeout", async () => {
+    vi.useFakeTimers();
+    const stalled = new Promise<Blob>(() => undefined) as Promise<Blob> & { cancel?: () => void };
+    stalled.cancel = vi.fn();
+    const downloadMedia = vi.fn().mockReturnValueOnce(stalled);
+    Object.assign(window, {
+      mtprotoMessagePort: {
+        getMessageByPeer: vi.fn().mockReturnValue({ media: { document: { mime_type: "video/mp4", size: 5 } } })
+      },
+      appDownloadManager: { downloadMedia }
+    });
+
+    const first = downloadTelegramBlob(descriptor(), new AbortController().signal, undefined, 100);
+    const timeoutExpectation = expect(first).rejects.toThrow("没有进度");
+    await vi.advanceTimersByTimeAsync(100);
+    await timeoutExpectation;
+    expect(stalled.cancel).toHaveBeenCalledOnce();
+
+    downloadMedia.mockResolvedValueOnce(new Blob(["video"], { type: "video/mp4" }));
+    await expect(downloadTelegramBlob(descriptor(), new AbortController().signal, undefined, 100)).resolves.toMatchObject({ size: 5 });
   });
 });

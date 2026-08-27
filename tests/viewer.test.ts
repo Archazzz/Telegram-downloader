@@ -45,7 +45,8 @@ describe("Telegram video viewer resolver", () => {
       document.body.appendChild(viewer);
     });
 
-    await expect(revealVideoSource(media, undefined, 100)).resolves.toContain("/stream/");
+    const revealed = await revealVideoSource(media, undefined, 100);
+    expect(revealed.url).toContain("/stream/");
   });
 
   it("accepts an inline video that replaces the poster inside the outer attachment", async () => {
@@ -56,7 +57,8 @@ describe("Telegram video viewer resolver", () => {
       media.host.replaceWith(video);
     });
 
-    await expect(revealVideoSource(media, undefined, 100)).resolves.toBe("blob:https://web.telegram.org/inline-video");
+    const revealed = await revealVideoSource(media, undefined, 100);
+    expect(revealed.url).toBe("blob:https://web.telegram.org/inline-video");
   });
 
   it("does not return the poster URL when Telegram never loads a video", async () => {
@@ -74,5 +76,25 @@ describe("Telegram video viewer resolver", () => {
     const result = revealVideoSource(media, controller.signal, 1_000);
     controller.abort();
     await expect(result).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("closes a viewer opened by the fallback after the caller finishes", async () => {
+    const { media, play } = unloadedVideo();
+    play.addEventListener("click", () => {
+      const viewer = document.createElement("div");
+      viewer.className = "media-viewer";
+      const close = document.createElement("button");
+      close.setAttribute("aria-label", "Close");
+      close.addEventListener("click", () => viewer.remove());
+      const video = document.createElement("video");
+      video.src = "blob:https://web.telegram.org/viewer-video";
+      viewer.append(video, close);
+      document.body.appendChild(viewer);
+    });
+
+    const revealed = await revealVideoSource(media, undefined, 100);
+    expect(document.querySelector(".media-viewer")).not.toBeNull();
+    revealed.dismiss();
+    expect(document.querySelector(".media-viewer")).toBeNull();
   });
 });

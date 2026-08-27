@@ -2,9 +2,8 @@ import { MediaDescriptor, mediaElementUrl } from "./media";
 
 const VIEWER_SELECTOR = [
   ".media-viewer",
-  "[class*='media-viewer']",
-  "[class*='MediaViewer']",
-  "[class*='viewer']"
+  ".MediaViewer",
+  "[data-testid='media-viewer']"
 ].join(",");
 const ATTACHMENT_SELECTOR = ".attachment.media-container,.attachment,[class*='bubble-video']";
 
@@ -22,15 +21,31 @@ function videoTrigger(media: MediaDescriptor, root: HTMLElement): HTMLElement {
     ?? media.element;
 }
 
+export type RevealedVideoSource = {
+  url: string;
+  dismiss: () => void;
+};
+
+function dismissViewer(video: HTMLVideoElement, viewer: HTMLElement | null, shouldClose: boolean): void {
+  video.pause();
+  if (!viewer || !shouldClose) return;
+  const close = viewer.querySelector<HTMLElement>(
+    "[aria-label='Close'],[aria-label='关闭'],.tgico-close,[class~='close']"
+  );
+  if (close) close.click();
+  else document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+}
+
 export function revealVideoSource(
   media: MediaDescriptor,
   signal?: AbortSignal,
   timeoutMs = 30_000
-): Promise<string> {
-  if (!media.requiresViewer) return Promise.resolve(media.url);
+): Promise<RevealedVideoSource> {
+  if (!media.requiresViewer) return Promise.resolve({ url: media.url, dismiss: () => undefined });
   if (signal?.aborted) return Promise.reject(new DOMException("下载已取消", "AbortError"));
 
   const existingVideos = new Set(document.querySelectorAll<HTMLVideoElement>("video"));
+  const existingViewers = new Set(document.querySelectorAll<HTMLElement>(VIEWER_SELECTOR));
   const existingSources = new Map([...existingVideos].map((video) => [video, videoSource(video)]));
   const root = interactionRoot(media);
 
@@ -44,11 +59,15 @@ export function revealVideoSource(
       signal?.removeEventListener("abort", onAbort);
       document.removeEventListener("loadedmetadata", onMediaReady, true);
     };
-    const finish = (url: string): void => {
+    const finish = (url: string, video: HTMLVideoElement): void => {
       if (settled) return;
       settled = true;
       cleanup();
-      resolve(url);
+      const viewer = video.closest<HTMLElement>(VIEWER_SELECTOR);
+      resolve({
+        url,
+        dismiss: () => dismissViewer(video, viewer, Boolean(viewer && !existingViewers.has(viewer)))
+      });
     };
     const fail = (error: Error): void => {
       if (settled) return;
@@ -56,8 +75,8 @@ export function revealVideoSource(
       cleanup();
       reject(error);
     };
-    const findSource = (): string | null => {
-      const changedVideos: string[] = [];
+    const findSource = (): { url: string; video: HTMLVideoElement } | null => {
+      const changedVideos: Array<{ url: string; video: HTMLVideoElement }> = [];
       for (const video of document.querySelectorAll<HTMLVideoElement>("video")) {
         const url = videoSource(video);
         if (!url) continue;
@@ -65,14 +84,14 @@ export function revealVideoSource(
         const sourceChanged = existingSources.get(video) !== url;
         const isOriginalMedia = root.contains(video);
         const isViewerMedia = Boolean(video.closest(VIEWER_SELECTOR));
-        if (isOriginalMedia || (isViewerMedia && (isNewVideo || sourceChanged))) return url;
-        if (isNewVideo || sourceChanged) changedVideos.push(url);
+        if (isOriginalMedia || (isViewerMedia && (isNewVideo || sourceChanged))) return { url, video };
+        if (isNewVideo || sourceChanged) changedVideos.push({ url, video });
       }
       return changedVideos.length === 1 ? changedVideos[0]! : null;
     };
     const inspect = (): void => {
       const url = findSource();
-      if (url) finish(url);
+      if (url) finish(url.url, url.video);
     };
     const onAbort = (): void => fail(new DOMException("下载已取消", "AbortError"));
     const onMediaReady = (): void => inspect();

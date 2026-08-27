@@ -104,7 +104,8 @@ async function resultBlob(result: unknown, signal: AbortSignal): Promise<Blob> {
 export async function downloadTelegramBlob(
   descriptor: MediaDescriptor,
   signal: AbortSignal,
-  onProgress?: (written: number, total: number) => void
+  onProgress?: (written: number, total: number) => void,
+  inactivityTimeoutMs = 60_000
 ): Promise<TelegramBlob | null> {
   const bubble = descriptor.element.closest<HTMLElement>("[data-mid][data-peer-id]");
   const peerId = bubble?.dataset.peerId;
@@ -119,16 +120,34 @@ export async function downloadTelegramBlob(
   return inTelegramDownloadSlot(signal, async () => {
     const options = { media, thumb: media.mime_type ? undefined : largestPhotoSize(media) };
     const task = download.call(manager, options);
-    const cancel = (): void => task.cancel?.();
+    let inactivityTimeout = 0;
+    let rejectAbort = (_error: DOMException): void => undefined;
+    let rejectInactivity = (_error: Error): void => undefined;
+    const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+    const inactive = new Promise<never>((_resolve, reject) => { rejectInactivity = reject; });
+    const armInactivityTimeout = (): void => {
+      window.clearTimeout(inactivityTimeout);
+      inactivityTimeout = window.setTimeout(() => {
+        task.cancel?.();
+        rejectInactivity(new Error(`Telegram 原生下载 ${Math.round(inactivityTimeoutMs / 1_000)} 秒没有进度`));
+      }, inactivityTimeoutMs);
+    };
+    const cancel = (): void => {
+      task.cancel?.();
+      rejectAbort(abortError());
+    };
     signal.addEventListener("abort", cancel, { once: true });
     task.addNotifyListener?.((progress) => {
+      armInactivityTimeout();
       const written = Number(progress?.done ?? 0);
       const total = Number(progress?.total ?? media.size ?? 0);
       if (written >= 0 && total >= 0) onProgress?.(written, total);
     });
 
     try {
-      const blob = await resultBlob(await task, signal);
+      armInactivityTimeout();
+      const result = await Promise.race([Promise.resolve(task), inactive, aborted]);
+      const blob = await resultBlob(result, signal);
       const declaredSize = Number(media.size ?? 0);
       return {
         blob,
@@ -137,6 +156,7 @@ export async function downloadTelegramBlob(
         size: Number.isFinite(declaredSize) && declaredSize > 0 ? declaredSize : blob.size
       };
     } finally {
+      window.clearTimeout(inactivityTimeout);
       signal.removeEventListener("abort", cancel);
     }
   });
