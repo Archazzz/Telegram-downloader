@@ -1,5 +1,5 @@
 import { BRIDGE_FRAME_ATTRIBUTE, BRIDGE_READY_ATTRIBUTE, BridgeResponse, BridgeStatus } from "../shared/protocol";
-import { DownloadError, DownloadErrorCode } from "../core/errors";
+import { DownloadError, DownloadErrorCode, errorCode } from "../core/errors";
 
 type PendingRequest = {
   resolve: (payload: Record<string, unknown>) => void;
@@ -10,8 +10,11 @@ type PendingRequest = {
 export class BridgeClient {
   private frame: HTMLIFrameElement | null = null;
   private frameOrigin = "";
+  private frameEpoch = 0;
+  private lastFrameSource = "";
   private readonly pending = new Map<string, PendingRequest>();
   private readyPromise: Promise<void> | null = null;
+  private recoveryPromise: Promise<void> | null = null;
   onSettingsChanged?: (status: BridgeStatus) => void;
 
   constructor() {
@@ -19,7 +22,15 @@ export class BridgeClient {
   }
 
   async status(): Promise<BridgeStatus> {
-    return await this.send("status") as unknown as BridgeStatus;
+    await this.waitUntilReady();
+    const failedEpoch = this.frameEpoch;
+    try {
+      return await this.send("status", {}, undefined, [], 5_000) as unknown as BridgeStatus;
+    } catch (error) {
+      if (errorCode(error) !== "BRIDGE_UNAVAILABLE") throw error;
+      await this.recoverBridge(failedEpoch);
+      return await this.send("status", {}, undefined, [], 10_000) as unknown as BridgeStatus;
+    }
   }
 
   async startFile(requestId: string, fileName: string, mimeType?: string): Promise<void> {
@@ -53,6 +64,8 @@ export class BridgeClient {
         if (frame?.contentWindow && frame.src && frame.hasAttribute(BRIDGE_READY_ATTRIBUTE)) {
           this.frame = frame;
           this.frameOrigin = new URL(frame.src).origin;
+          this.lastFrameSource = frame.src;
+          this.frameEpoch += 1;
           resolve();
           return;
         }
@@ -72,11 +85,51 @@ export class BridgeClient {
     }
   }
 
+  private async recoverBridge(failedEpoch: number): Promise<void> {
+    if (this.frameEpoch !== failedEpoch) {
+      await this.waitUntilReady();
+      return;
+    }
+    if (!this.recoveryPromise) {
+      this.recoveryPromise = (async () => {
+        const staleFrame = this.frame ?? document.querySelector<HTMLIFrameElement>(`iframe[${BRIDGE_FRAME_ATTRIBUTE}]`);
+        const source = staleFrame?.src || this.lastFrameSource;
+        if (!source) throw new DownloadError("扩展写入桥接页不存在，请刷新 Telegram Web 后重试", "BRIDGE_UNAVAILABLE");
+
+        for (const request of this.pending.values()) {
+          window.clearTimeout(request.timeout);
+          request.reject(new DownloadError("扩展写入桥接已重新连接，请重试当前请求", "BRIDGE_UNAVAILABLE"));
+        }
+        this.pending.clear();
+
+        const replacement = document.createElement("iframe");
+        replacement.id = staleFrame?.id ?? "telegram-media-downloader-bridge";
+        replacement.src = source;
+        replacement.setAttribute(BRIDGE_FRAME_ATTRIBUTE, "");
+        replacement.setAttribute("aria-hidden", "true");
+        replacement.tabIndex = -1;
+        replacement.style.cssText = staleFrame?.style.cssText ?? "position:fixed;width:1px;height:1px;left:-10000px;top:-10000px;border:0;opacity:0;pointer-events:none";
+        replacement.addEventListener("load", () => replacement.setAttribute(BRIDGE_READY_ATTRIBUTE, ""), { once: true });
+
+        this.frame = null;
+        this.frameOrigin = "";
+        this.readyPromise = null;
+        if (staleFrame?.isConnected) staleFrame.replaceWith(replacement);
+        else (document.documentElement ?? document).appendChild(replacement);
+        await this.waitUntilReady();
+      })().finally(() => {
+        this.recoveryPromise = null;
+      });
+    }
+    await this.recoveryPromise;
+  }
+
   private async send(
     type: string,
     payload: Record<string, unknown> = {},
     providedRequestId?: string,
-    transfer: Transferable[] = []
+    transfer: Transferable[] = [],
+    timeoutMs = 30_000
   ): Promise<Record<string, unknown>> {
     await this.waitUntilReady();
     const requestId = providedRequestId ?? crypto.randomUUID();
@@ -87,7 +140,7 @@ export class BridgeClient {
       const timeout = window.setTimeout(() => {
         this.pending.delete(pendingKey);
         reject(new DownloadError(`写入桥接请求超时：${type}`, "BRIDGE_UNAVAILABLE"));
-      }, 30_000);
+      }, timeoutMs);
       this.pending.set(pendingKey, { resolve, reject, timeout });
     });
 
