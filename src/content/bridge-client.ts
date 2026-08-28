@@ -16,6 +16,8 @@ export class BridgeClient {
   private readonly pending = new Map<string, PendingRequest>();
   private readyPromise: Promise<void> | null = null;
   private recoveryPromise: Promise<void> | null = null;
+  private queuedStats: Record<string, unknown> | null = null;
+  private statsInFlight = false;
   onSettingsChanged?: (status: BridgeStatus) => void;
 
   constructor() {
@@ -23,35 +25,46 @@ export class BridgeClient {
   }
 
   async status(): Promise<BridgeStatus> {
-    let failedEpoch = this.frameEpoch;
-    try {
-      await this.waitUntilReady();
-      failedEpoch = this.frameEpoch;
-      return await this.send("status", {}, undefined, [], 5_000) as unknown as BridgeStatus;
-    } catch (error) {
-      if (errorCode(error) !== "BRIDGE_UNAVAILABLE") throw error;
-      await this.recoverBridge(failedEpoch);
-      return await this.send("status", {}, undefined, [], 10_000) as unknown as BridgeStatus;
-    }
+    return await this.request("status", {}, undefined, [], 5_000) as unknown as BridgeStatus;
   }
 
   async startFile(requestId: string, fileName: string, mimeType?: string): Promise<void> {
-    await this.send("file:start", { fileName, mimeType }, requestId);
+    await this.request("file:start", { fileName, mimeType }, requestId);
   }
 
   async writeChunk(requestId: string, chunk: Uint8Array): Promise<number> {
     const transferable = new Uint8Array(chunk).buffer;
-    const response = await this.send("file:chunk", { chunk: transferable }, requestId, [transferable]);
+    const response = await this.request("file:chunk", { chunk: transferable }, requestId, [transferable]);
     return typeof response.bytesWritten === "number" ? response.bytesWritten : 0;
   }
 
   async closeFile(requestId: string): Promise<number> {
-    const response = await this.send("file:close", {}, requestId);
+    const response = await this.request("file:close", {}, requestId);
     return typeof response.bytesWritten === "number" ? response.bytesWritten : 0;
   }
 
   async abortFile(requestId: string): Promise<void> {
     await this.send("file:abort", {}, requestId).catch(() => undefined);
+  }
+
+  updatePageStats(stats: Record<string, unknown>): void {
+    this.queuedStats = stats;
+    if (this.statsInFlight) return;
+    this.statsInFlight = true;
+    void this.flushPageStats();
+  }
+
+  private async flushPageStats(): Promise<void> {
+    try {
+      while (this.queuedStats) {
+        const stats = this.queuedStats;
+        this.queuedStats = null;
+        await this.request("page:stats", { stats }, undefined, [], 5_000).catch(() => undefined);
+      }
+    } finally {
+      this.statsInFlight = false;
+      if (this.queuedStats) this.updatePageStats(this.queuedStats);
+    }
   }
 
   private async waitUntilReady(): Promise<void> {
@@ -150,6 +163,25 @@ export class BridgeClient {
     await this.recoveryPromise;
   }
 
+  private async request(
+    type: string,
+    payload: Record<string, unknown> = {},
+    providedRequestId?: string,
+    transfer: Transferable[] = [],
+    timeoutMs = 30_000
+  ): Promise<Record<string, unknown>> {
+    let failedEpoch = this.frameEpoch;
+    try {
+      await this.waitUntilReady();
+      failedEpoch = this.frameEpoch;
+      return await this.send(type, payload, providedRequestId, transfer, timeoutMs);
+    } catch (error) {
+      if (errorCode(error) !== "BRIDGE_UNAVAILABLE") throw error;
+      await this.recoverBridge(failedEpoch);
+      return await this.send(type, payload, providedRequestId, transfer, timeoutMs);
+    }
+  }
+
   private async send(
     type: string,
     payload: Record<string, unknown> = {},
@@ -170,12 +202,21 @@ export class BridgeClient {
       this.pending.set(pendingKey, { resolve, reject, timeout });
     });
 
-    this.frame.contentWindow.postMessage({
-      source: "telegram-media-downloader",
-      type,
-      requestId,
-      payload
-    }, this.frameOrigin, transfer);
+    try {
+      this.frame.contentWindow.postMessage({
+        source: "telegram-media-downloader",
+        type,
+        requestId,
+        payload
+      }, this.frameOrigin, transfer);
+    } catch (error) {
+      const failed = this.pending.get(pendingKey);
+      if (failed) {
+        window.clearTimeout(failed.timeout);
+        this.pending.delete(pendingKey);
+        failed.reject(new DownloadError("扩展写入桥接页已失效，正在重新连接", "BRIDGE_UNAVAILABLE", { cause: error }));
+      }
+    }
     return response;
   }
 
