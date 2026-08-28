@@ -96,6 +96,24 @@ export class DownloadQueue<T> {
     return true;
   }
 
+  pauseAll(keys: Iterable<string> = this.tasks.keys()): number {
+    let changed = 0;
+    for (const key of keys) changed += Number(this.pause(key));
+    return changed;
+  }
+
+  resumeAll(keys: Iterable<string> = this.tasks.keys()): number {
+    let changed = 0;
+    for (const key of keys) changed += Number(this.resume(key));
+    return changed;
+  }
+
+  cancelAll(keys: Iterable<string> = this.tasks.keys()): number {
+    let changed = 0;
+    for (const key of [...keys]) changed += Number(this.cancel(key));
+    return changed;
+  }
+
   cancel(key: string): boolean {
     const managed = this.tasks.get(key);
     if (!managed || managed.cancelled) return false;

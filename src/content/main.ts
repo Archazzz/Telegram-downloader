@@ -9,6 +9,7 @@ import { reserveMapEntry } from "../core/registry";
 import { downloadTelegramBlob, TelegramBlob } from "../core/telegram";
 import { abortableSleep, withAbortableTimeout } from "../core/timing";
 import { TransferMeter, TransferPhase } from "../core/transfer";
+import { attachmentPresentation, shouldWarnAboutLargeBlob } from "../core/ui-state";
 import { revealVideoSource } from "../core/viewer";
 import { DEFAULT_CONCURRENCY } from "../shared/settings";
 import { BridgeClient } from "./bridge-client";
@@ -38,6 +39,7 @@ const CHECK_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4
 const PAUSE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5v14M15 5v14" /></svg>`;
 const PLAY_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z" /></svg>`;
 const CLOSE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>`;
+const RETRY_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" /></svg>`;
 const COLLAPSE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 6-6 6 6" /></svg>`;
 const RETRY_DELAYS = [1_000, 2_000, 4_000];
 const TELEGRAM_RETRY_DELAYS = [1_000, 2_000];
@@ -51,6 +53,8 @@ const pendingRoots = new Set<HTMLElement>();
 let scanScheduled = false;
 let queueRenderScheduled = false;
 let queueCollapsed = false;
+let viewerHintShown = false;
+const warnedLargeMedia = new Set<string>();
 
 const queue = new DownloadQueue<MediaDescriptor>(async ({ value }, control) => downloadWithRetry(value, control), DEFAULT_CONCURRENCY);
 
@@ -79,26 +83,48 @@ function thumbnailUrl(media: MediaDescriptor): string {
   return media.element.currentSrc || media.element.getAttribute("src") || "";
 }
 
-function showToast(message: string, timeout = 3200): void {
-  document.querySelector(".tmd-toast")?.remove();
+function showToast(message: string, options: { persistent?: boolean; timeout?: number } = {}): void {
+  const persistent = options.persistent === true;
+  if (persistent) {
+    const duplicate = [...document.querySelectorAll<HTMLElement>(".tmd-toast[data-persistent='true']")]
+      .some((toast) => toast.dataset.message === message);
+    if (duplicate) return;
+  } else {
+    document.querySelector(".tmd-toast:not([data-persistent='true'])")?.remove();
+  }
   const toast = document.createElement("div");
   toast.className = "tmd-toast";
-  toast.setAttribute("role", "status");
-  toast.textContent = message;
-  document.body.appendChild(toast);
-  window.setTimeout(() => toast.remove(), timeout);
+  toast.dataset.persistent = String(persistent);
+  toast.dataset.message = message;
+  toast.setAttribute("role", persistent ? "alert" : "status");
+  const copy = document.createElement("span");
+  copy.textContent = message;
+  toast.appendChild(copy);
+  if (persistent) {
+    toast.appendChild(queueActionButton("关闭提示", CLOSE_ICON, () => toast.remove()));
+  }
+  let stack = document.querySelector<HTMLElement>(".tmd-toast-stack");
+  if (!stack) {
+    stack = document.createElement("div");
+    stack.className = "tmd-toast-stack";
+    document.body.appendChild(stack);
+  }
+  stack.appendChild(toast);
+  if (!persistent) window.setTimeout(() => toast.remove(), options.timeout ?? 3200);
 }
 
 function setAttachmentState(mediaId: string, state: QueueState, detail?: string): void {
+  const presentation = attachmentPresentation(state, detail);
   for (const button of document.querySelectorAll<HTMLButtonElement>(`.tmd-download-button[data-media-id="${CSS.escape(mediaId)}"]`)) {
     button.dataset.state = state;
-    button.disabled = state === "queued" || state === "running" || state === "paused";
-    button.title = detail ?? (state === "success" ? "下载完成" : state === "error" ? "下载失败，点击重试" : state === "paused" ? "下载已暂停" : "下载这个媒体");
-    button.innerHTML = state === "success" ? CHECK_ICON : state === "paused" ? `<span class="tmd-progress-label">Ⅱ</span>` : state === "running" && detail?.endsWith("%")
-      ? `<span class="tmd-progress-label">${detail}</span>`
-      : state === "error" ? `<span class="tmd-progress-label">!</span>` : DOWNLOAD_ICON;
+    button.disabled = presentation.disabled;
+    button.title = presentation.title;
+    button.setAttribute("aria-label", presentation.ariaLabel);
+    button.innerHTML = presentation.content === "success" ? CHECK_ICON
+      : presentation.text ? `<span class="tmd-progress-label">${presentation.text}</span>`
+      : DOWNLOAD_ICON;
   }
-  if (state === "success" || state === "error" || state === "cancelled") {
+  if (state === "success" || state === "cancelled") {
     window.setTimeout(() => resetAttachmentState(mediaId), 2200);
   }
 }
@@ -108,6 +134,7 @@ function resetAttachmentState(mediaId: string): void {
     button.dataset.state = "idle";
     button.disabled = false;
     button.title = "下载这个媒体";
+    button.setAttribute("aria-label", "下载这个媒体");
     button.innerHTML = DOWNLOAD_ICON;
   }
 }
@@ -132,14 +159,6 @@ function updateDownloadState(mediaId: string, state: QueueState, detail?: string
   }
   if (detail) item.detail = detail;
   scheduleQueueRender();
-  if (state === "success" || state === "error" || state === "cancelled") {
-    window.setTimeout(() => {
-      if (downloadItems.get(mediaId)?.state === state) {
-        downloadItems.delete(mediaId);
-        scheduleQueueRender();
-      }
-    }, 2200);
-  }
 }
 
 function updateDownloadProgress(mediaId: string, written: number, total: number, phase: TransferPhase): void {
@@ -220,6 +239,10 @@ function renderQueueRow(item: DownloadViewItem): HTMLElement {
   if (item.state === "queued" || item.state === "running" || item.state === "paused") {
     actions.appendChild(queueActionButton("取消", CLOSE_ICON, () => queue.cancel(item.id)));
   }
+  if (item.state === "error") {
+    actions.appendChild(queueActionButton("重试", RETRY_ICON, () => retryDownload(item.id)));
+    actions.appendChild(queueActionButton("清除此失败任务", CLOSE_ICON, () => removeDownloadItem(item.id)));
+  }
   row.append(preview, content, actions);
   return row;
 }
@@ -232,6 +255,52 @@ function queueSection(title: string, items: DownloadViewItem[]): HTMLElement {
   section.appendChild(heading);
   items.forEach((item) => section.appendChild(renderQueueRow(item)));
   return section;
+}
+
+function queueTextButton(label: string, action: () => void): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "tmd-queue-text-button";
+  button.textContent = label;
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    action();
+  });
+  return button;
+}
+
+function dismissPersistentToast(message?: string): void {
+  if (!message) return;
+  for (const toast of document.querySelectorAll<HTMLElement>(".tmd-toast[data-persistent='true']")) {
+    if (toast.dataset.message === message) toast.remove();
+  }
+}
+
+function removeDownloadItem(mediaId: string): void {
+  dismissPersistentToast(downloadItems.get(mediaId)?.detail);
+  downloadItems.delete(mediaId);
+  resetAttachmentState(mediaId);
+  scheduleQueueRender();
+  postStats();
+}
+
+function retryDownload(mediaId: string): void {
+  const media = mediaById.get(mediaId);
+  if (!media) {
+    showToast("原消息媒体已失效，请重新滚动到该消息后再试", { persistent: true });
+    return;
+  }
+  dismissPersistentToast(downloadItems.get(mediaId)?.detail);
+  downloadItems.delete(mediaId);
+  resetAttachmentState(mediaId);
+  if (!enqueueMedia(media)) showToast("任务仍在结束处理中，请稍后重试");
+}
+
+function clearCompletedDownloads(): void {
+  for (const [id, item] of downloadItems) {
+    if (item.state === "success" || item.state === "cancelled") removeDownloadItem(id);
+  }
 }
 
 function renderQueuePanel(): void {
@@ -275,6 +344,17 @@ function renderQueuePanel(): void {
   panel.appendChild(header);
 
   if (queueCollapsed) return;
+  const toolbar = document.createElement("div");
+  toolbar.className = "tmd-queue-toolbar";
+  const pausable = running.filter((item) => item.state === "running" && item.canPause).map((item) => item.id);
+  const paused = running.filter((item) => item.state === "paused").map((item) => item.id);
+  const cancellable = [...running, ...waiting].map((item) => item.id);
+  const completed = terminal.filter((item) => item.state === "success" || item.state === "cancelled");
+  if (pausable.length > 0) toolbar.appendChild(queueTextButton("暂停全部", () => queue.pauseAll(pausable)));
+  if (paused.length > 0) toolbar.appendChild(queueTextButton("继续全部", () => queue.resumeAll(paused)));
+  if (cancellable.length > 0) toolbar.appendChild(queueTextButton("取消全部", () => queue.cancelAll(cancellable)));
+  if (completed.length > 0) toolbar.appendChild(queueTextButton("清除完成", clearCompletedDownloads));
+  if (toolbar.childElementCount > 0) panel.appendChild(toolbar);
   if (running.length > 0) panel.appendChild(queueSection("正在下载", running));
   if (waiting.length > 0) panel.appendChild(queueSection("等待中", waiting));
   if (terminal.length > 0) panel.appendChild(queueSection("最近状态", terminal));
@@ -300,7 +380,7 @@ function enqueueMedia(media: MediaDescriptor, batchTracker?: (state: QueueState)
         updateDownloadState(media.id, state, detail);
         batchTracker?.(state);
         postStats();
-        if (state === "error" && detail) showToast(detail);
+        if (state === "error" && detail) showToast(detail, { persistent: true });
       }
     }));
   scheduleQueueRender();
@@ -324,7 +404,9 @@ function decorateAttachment(media: MediaDescriptor): void {
       event.preventDefault();
       event.stopPropagation();
       const latest = mediaById.get(button?.dataset.mediaId ?? "");
-      if (latest && !enqueueMedia(latest)) showToast("这个文件已在下载队列中");
+      const current = latest ? downloadItems.get(latest.id) : undefined;
+      if (current?.state === "error") retryDownload(current.id);
+      else if (latest && !enqueueMedia(latest)) showToast("这个文件已在下载队列中");
     });
     media.host.appendChild(button);
   }
@@ -443,6 +525,7 @@ function pruneRegistry(): void {
 }
 
 function postStats(): void {
+  const items = [...downloadItems.values()];
   window.postMessage({
     source: "telegram-media-downloader",
     type: "page-stats",
@@ -450,7 +533,9 @@ function postStats(): void {
       mediaCount: mediaById.size,
       messageCount: groups.size,
       queueActive: queue.activeCount,
-      queuePending: queue.queuedCount
+      queuePending: queue.queuedCount,
+      queueErrors: items.filter((item) => item.state === "error").length,
+      queueComplete: items.filter((item) => item.state === "success" || item.state === "cancelled").length
     }
   }, window.location.origin);
 }
@@ -603,6 +688,10 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
   let telegramError: unknown;
   let dismissViewer: (() => void) | undefined;
   if (media.requiresViewer) {
+    if (shouldWarnAboutLargeBlob(media.size) && !warnedLargeMedia.has(media.id)) {
+      warnedLargeMedia.add(media.id);
+      showToast("这个大视频会占用较多浏览器内存，请保持 Telegram 页面打开", { timeout: 8000 });
+    }
     setDownloadPausable(media.id, false);
     updateDownloadState(media.id, "running", "正在读取 Telegram 原始视频…");
     setAttachmentState(media.id, "running", "正在读取 Telegram 原始视频…");
@@ -619,6 +708,10 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
         size: telegramBlob.size
       };
     } else {
+      if (!viewerHintShown) {
+        viewerHintShown = true;
+        showToast("需要临时打开 Telegram 播放器读取视频，下载结束后会自动关闭", { timeout: 6500 });
+      }
       updateDownloadState(media.id, "running", "正在打开视频…");
       setAttachmentState(media.id, "running", "正在打开视频…");
       let url: string;
@@ -666,6 +759,10 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
           if (total > 0) setAttachmentState(media.id, "running", formatProgress(written / total));
         };
         if (telegramBlob) {
+          if (shouldWarnAboutLargeBlob(telegramBlob.size) && !warnedLargeMedia.has(media.id)) {
+            warnedLargeMedia.add(media.id);
+            showToast("这个大视频正在使用浏览器内存写入，请保持 Telegram 页面打开", { timeout: 8000 });
+          }
           const response = new Response(telegramBlob.blob);
           await streamResponse(response, requestId, control, (written) => progress(written, telegramBlob!.size));
         } else {
