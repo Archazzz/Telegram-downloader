@@ -26,7 +26,7 @@ async function startFile(requestId: string, payload: Record<string, unknown>): P
   const permission = await queryDirectoryPermission(directory);
   if (permission !== "granted") throw new DownloadError("下载目录需要重新授权，请点击扩展图标后重新授权一次", "DIRECTORY_PERMISSION");
   const rawName = typeof payload.fileName === "string" ? payload.fileName : buildFileName({ id: requestId, kind: "video" });
-  const fileName = await fileStore.start(directory, requestId, rawName);
+  const fileName = await fileStore.start(directory, requestId, rawName, payload.replaceEmpty === true);
   return { fileName };
 }
 

@@ -1,4 +1,4 @@
-export type TransferPhase = "Telegram 传输" | "网络传输" | "本地写入";
+export type TransferPhase = "Telegram 传输" | "网络传输" | "本地写入" | "正在完成";
 
 export class TransferMeter {
   private phase?: TransferPhase;

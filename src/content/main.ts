@@ -743,13 +743,19 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
     resolvedMedia = refreshMediaSource(resolvedMedia);
   }
   const fileName = buildFileName(resolvedMedia);
+  let outputFileName = fileName;
   try {
     for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt += 1) {
       await control.waitIfPaused();
       if (!telegramBlob) resolvedMedia = refreshMediaSource(resolvedMedia);
       const requestId = crypto.randomUUID();
       try {
-        await bridge.startFile(requestId, fileName, resolvedMedia.mimeType);
+        outputFileName = await bridge.startFile(requestId, outputFileName, resolvedMedia.mimeType, attempt > 0);
+        const item = downloadItems.get(media.id);
+        if (item && item.fileName !== outputFileName) {
+          item.fileName = outputFileName;
+          scheduleQueueRender();
+        }
         const progress = (written: number, total: number): void => {
           updateDownloadProgress(media.id, written, total, telegramBlob ? "本地写入" : "网络传输");
           if (total > 0) setAttachmentState(media.id, "running", formatProgress(written / total));
@@ -763,6 +769,11 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
           await streamResponse(response, requestId, control, (written) => progress(written, telegramBlob!.size));
         } else {
           await fetchIntoFile(resolvedMedia, requestId, control, progress);
+        }
+        const completedItem = downloadItems.get(media.id);
+        if (completedItem) {
+          updateDownloadProgress(media.id, completedItem.written, completedItem.total, "正在完成");
+          setAttachmentState(media.id, "running", "正在完成文件写入…");
         }
         await bridge.closeFile(requestId);
         return;
