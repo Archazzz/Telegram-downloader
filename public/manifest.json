@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Telegram Media Downloader",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "minimum_chrome_version": "116",
   "description": "Download visible photos and videos from Telegram Web to a folder you choose.",
   "icons": {
