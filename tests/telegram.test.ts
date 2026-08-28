@@ -57,7 +57,7 @@ describe("Telegram native media download", () => {
     await expect(downloadTelegramBlob(descriptor(), new AbortController().signal)).resolves.toBeNull();
   });
 
-  it("serializes concurrent calls to Telegram's internal download manager", async () => {
+  it("lets the queue manage concurrency instead of serializing Telegram downloads globally", async () => {
     let active = 0;
     let maximumActive = 0;
     const resolvers: Array<() => void> = [];
@@ -78,16 +78,14 @@ describe("Telegram native media download", () => {
 
     const first = downloadTelegramBlob(descriptor(), new AbortController().signal);
     const second = downloadTelegramBlob(descriptor(), new AbortController().signal);
-    await vi.waitFor(() => expect(downloadMedia).toHaveBeenCalledTimes(1));
-    resolvers.shift()?.();
     await vi.waitFor(() => expect(downloadMedia).toHaveBeenCalledTimes(2));
-    resolvers.shift()?.();
+    resolvers.splice(0).forEach((resolve) => resolve());
 
     await expect(Promise.all([first, second])).resolves.toHaveLength(2);
-    expect(maximumActive).toBe(1);
+    expect(maximumActive).toBe(2);
   });
 
-  it("releases the native slot after an inactivity timeout", async () => {
+  it("cancels a native task after an inactivity timeout", async () => {
     vi.useFakeTimers();
     const stalled = new Promise<Blob>(() => undefined) as Promise<Blob> & { cancel?: () => void };
     stalled.cancel = vi.fn();

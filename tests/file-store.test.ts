@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { FileStore } from "../src/core/file-store";
 
 type MockFile = {
+  size: number;
   writable: {
     write: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
@@ -20,6 +21,7 @@ function mockDirectory(): FileSystemDirectoryHandle & { files: Map<string, MockF
       if (!file && !options?.create) throw new DOMException("missing", "NotFoundError");
       if (!file) {
         file = {
+          size: 0,
           writable: {
             write: vi.fn().mockResolvedValue(undefined),
             close: vi.fn().mockResolvedValue(undefined),
@@ -31,6 +33,7 @@ function mockDirectory(): FileSystemDirectoryHandle & { files: Map<string, MockF
       return {
         kind: "file",
         name,
+        getFile: vi.fn(async () => ({ size: file!.size })),
         createWritable: vi.fn().mockResolvedValue(file.writable)
       } as unknown as FileSystemFileHandle;
     }),
@@ -59,6 +62,23 @@ describe("offscreen file store", () => {
     expect(await store.close("request")).toBe(7);
     expect(directory.files.has("photo.jpg")).toBe(true);
     expect(store.openCount).toBe(0);
+  });
+
+  it("assigns a numbered name when the requested file already exists", async () => {
+    const directory = mockDirectory();
+    const store = new FileStore();
+    await store.start(directory, "first", "video.mp4");
+    expect(await store.start(directory, "second", "video.mp4")).toBe("video (1).mp4");
+  });
+
+  it("reuses its own empty reservation after a writer context is lost", async () => {
+    const directory = mockDirectory();
+    const firstStore = new FileStore();
+    expect(await firstStore.start(directory, "lost", "video.mp4")).toBe("video.mp4");
+
+    const recoveredStore = new FileStore();
+    expect(await recoveredStore.start(directory, "retry", "video.mp4", true)).toBe("video.mp4");
+    expect(directory.files.has("video (1).mp4")).toBe(false);
   });
 
   it("returns a non-retryable capacity error instead of silently overflowing", async () => {
