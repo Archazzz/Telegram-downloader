@@ -104,4 +104,69 @@ describe("bridge client readiness", () => {
 
     await expect(status).resolves.toMatchObject({ folderName: "Downloads", permission: "granted" });
   });
+
+  it("catches a postMessage origin race and rebuilds the bridge before retrying", async () => {
+    vi.useFakeTimers();
+    const frame = document.createElement("iframe");
+    frame.id = "telegram-media-downloader-bridge";
+    frame.src = "about:blank";
+    frame.setAttribute(BRIDGE_FRAME_ATTRIBUTE, "");
+    document.body.appendChild(frame);
+    const stalePostMessage = vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation((message) => {
+      if ((message as { type?: string }).type === "status") {
+        throw new DOMException("The target origin does not match the recipient window's origin", "SecurityError");
+      }
+    });
+    const client = new BridgeClient();
+
+    const status = client.status();
+    await vi.waitFor(() => expect(stalePostMessage).toHaveBeenCalled());
+    const ping = stalePostMessage.mock.calls.map((call) => call[0] as { requestId: string; type: string }).find((request) => request.type === "bridge:ping")!;
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: "null",
+      data: {
+        source: "telegram-media-downloader-bridge",
+        type: "bridge:ready",
+        requestId: ping.requestId,
+        ok: true
+      }
+    }));
+    await vi.waitFor(() => expect(stalePostMessage.mock.calls.some((call) => (call[0] as { type?: string }).type === "status")).toBe(true));
+
+    const replacement = document.querySelector<HTMLIFrameElement>(`iframe[${BRIDGE_FRAME_ATTRIBUTE}]`)!;
+    expect(replacement).not.toBe(frame);
+    const replacementPostMessage = vi.spyOn(replacement.contentWindow!, "postMessage");
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(replacementPostMessage).toHaveBeenCalled());
+    const replacementPing = replacementPostMessage.mock.calls.map((call) => call[0] as { requestId: string; type: string }).find((request) => request.type === "bridge:ping")!;
+    window.dispatchEvent(new MessageEvent("message", {
+      source: replacement.contentWindow,
+      origin: "null",
+      data: {
+        source: "telegram-media-downloader-bridge",
+        type: "bridge:ready",
+        requestId: replacementPing.requestId,
+        ok: true
+      }
+    }));
+    await vi.waitFor(() => expect(replacementPostMessage.mock.calls.some((call) => (call[0] as { type?: string }).type === "status")).toBe(true));
+
+    const statusCall = replacementPostMessage.mock.calls.find((call) => (call[0] as { type?: string }).type === "status")!;
+    expect(statusCall[1]).toBe("null");
+    const request = statusCall[0] as { requestId: string };
+    window.dispatchEvent(new MessageEvent("message", {
+      source: replacement.contentWindow,
+      origin: "null",
+      data: {
+        source: "telegram-media-downloader-bridge",
+        type: "status:response",
+        requestId: request.requestId,
+        ok: true,
+        payload: { folderName: "Downloads", permission: "granted", concurrency: 2 }
+      }
+    }));
+
+    await expect(status).resolves.toMatchObject({ permission: "granted" });
+  });
 });

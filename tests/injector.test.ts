@@ -6,15 +6,12 @@ afterEach(() => {
 });
 
 describe("isolated-world injector", () => {
-  it("silently stops forwarding stats after the extension context is invalidated", async () => {
+  it("does not retain a runtime listener that can outlive the extension context", async () => {
     const sendMessage = vi.fn();
     const runtime = {
       getURL: vi.fn(() => "about:blank"),
       sendMessage
     } as unknown as typeof chrome.runtime;
-    Object.defineProperty(runtime, "id", {
-      get: () => { throw new Error("Extension context invalidated."); }
-    });
     vi.stubGlobal("chrome", { runtime });
     await import("../src/content/injector");
 
