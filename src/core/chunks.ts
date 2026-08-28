@@ -2,7 +2,7 @@ export class ChunkAccumulator {
   private chunks: Uint8Array<ArrayBufferLike>[] = [];
   private bytes = 0;
 
-  constructor(private readonly targetBytes = 1024 * 1024) {}
+  constructor(private readonly targetBytes = 4 * 1024 * 1024) {}
 
   push(chunk: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBuffer> | null {
     if (chunk.byteLength === 0) return null;
