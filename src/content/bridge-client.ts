@@ -9,6 +9,7 @@ type PendingRequest = {
 
 export class BridgeClient {
   private frame: HTMLIFrameElement | null = null;
+  private verifiedWindow: WindowProxy | null = null;
   private frameOrigin = "";
   private frameEpoch = 0;
   private lastFrameSource = "";
@@ -22,9 +23,10 @@ export class BridgeClient {
   }
 
   async status(): Promise<BridgeStatus> {
-    await this.waitUntilReady();
-    const failedEpoch = this.frameEpoch;
+    let failedEpoch = this.frameEpoch;
     try {
+      await this.waitUntilReady();
+      failedEpoch = this.frameEpoch;
       return await this.send("status", {}, undefined, [], 5_000) as unknown as BridgeStatus;
     } catch (error) {
       if (errorCode(error) !== "BRIDGE_UNAVAILABLE") throw error;
@@ -53,23 +55,48 @@ export class BridgeClient {
   }
 
   private async waitUntilReady(): Promise<void> {
-    if (this.frame?.isConnected && this.frame.contentWindow) return;
+    if (this.frame?.isConnected && this.frame.contentWindow && this.verifiedWindow === this.frame.contentWindow) return;
     this.frame = null;
+    this.verifiedWindow = null;
     this.frameOrigin = "";
     if (this.readyPromise) return this.readyPromise;
     const readyPromise = new Promise<void>((resolve, reject) => {
       const started = Date.now();
+      const pingRequestId = crypto.randomUUID();
+      let settled = false;
+      let candidate: HTMLIFrameElement | null = null;
+      let candidateOrigin = "";
+      const cleanup = (): void => window.removeEventListener("message", onReady);
+      const onReady = (event: MessageEvent): void => {
+        const response = event.data as BridgeResponse;
+        if (!candidate?.contentWindow || event.source !== candidate.contentWindow || event.origin !== candidateOrigin) return;
+        if (response?.source !== "telegram-media-downloader-bridge" || response.type !== "bridge:ready" || response.requestId !== pingRequestId) return;
+        settled = true;
+        cleanup();
+        candidate.setAttribute(BRIDGE_READY_ATTRIBUTE, "");
+        this.frame = candidate;
+        this.verifiedWindow = candidate.contentWindow;
+        this.frameOrigin = candidateOrigin;
+        this.lastFrameSource = candidate.src;
+        this.frameEpoch += 1;
+        resolve();
+      };
+      window.addEventListener("message", onReady);
       const check = () => {
+        if (settled) return;
         const frame = document.querySelector<HTMLIFrameElement>(`iframe[${BRIDGE_FRAME_ATTRIBUTE}]`);
-        if (frame?.contentWindow && frame.src && frame.hasAttribute(BRIDGE_READY_ATTRIBUTE)) {
-          this.frame = frame;
-          this.frameOrigin = new URL(frame.src).origin;
-          this.lastFrameSource = frame.src;
-          this.frameEpoch += 1;
-          resolve();
-          return;
+        if (frame?.contentWindow && frame.src) {
+          candidate = frame;
+          candidateOrigin = new URL(frame.src).origin;
+          frame.contentWindow.postMessage({
+            source: "telegram-media-downloader",
+            type: "bridge:ping",
+            requestId: pingRequestId
+          }, "*");
         }
-        if (Date.now() - started > 10_000) {
+        if (Date.now() - started > 3_000) {
+          settled = true;
+          cleanup();
           reject(new DownloadError("扩展写入桥接页未能加载，请稍后重试或刷新 Telegram Web", "BRIDGE_UNAVAILABLE"));
           return;
         }
@@ -109,9 +136,8 @@ export class BridgeClient {
         replacement.setAttribute("aria-hidden", "true");
         replacement.tabIndex = -1;
         replacement.style.cssText = staleFrame?.style.cssText ?? "position:fixed;width:1px;height:1px;left:-10000px;top:-10000px;border:0;opacity:0;pointer-events:none";
-        replacement.addEventListener("load", () => replacement.setAttribute(BRIDGE_READY_ATTRIBUTE, ""), { once: true });
-
         this.frame = null;
+        this.verifiedWindow = null;
         this.frameOrigin = "";
         this.readyPromise = null;
         if (staleFrame?.isConnected) staleFrame.replaceWith(replacement);

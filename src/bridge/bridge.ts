@@ -71,6 +71,15 @@ window.addEventListener("message", (event: MessageEvent) => {
   if (event.source !== window.parent || !ALLOWED_ORIGINS.has(event.origin)) return;
   const request = event.data as BridgeRequest;
   if (request?.source !== "telegram-media-downloader" || typeof request.type !== "string" || typeof request.requestId !== "string") return;
+  if (request.type === "bridge:ping") {
+    respond(event, {
+      source: "telegram-media-downloader-bridge",
+      type: "bridge:ready",
+      requestId: request.requestId,
+      ok: true
+    });
+    return;
+  }
   void forwardRequest(event, request).catch((error) => {
     respond(event, {
       source: "telegram-media-downloader-bridge",
