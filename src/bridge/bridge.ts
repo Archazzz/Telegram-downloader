@@ -1,12 +1,10 @@
-import { BridgeRequest, BridgeResponse, WRITER_CHANNEL_NAME } from "../shared/protocol";
+import { BridgeRequest, BridgeResponse, BRIDGE_REQUEST_TIMEOUT_MS, FILE_COMMIT_TIMEOUT_MS, WRITER_CHANNEL_NAME } from "../shared/protocol";
 import { getSettings } from "../shared/settings";
-import { errorCode } from "../core/errors";
+import { DownloadError, errorCode } from "../core/errors";
 
 const ALLOWED_ORIGINS = new Set([
   "https://web.telegram.org"
 ]);
-const RELAY_TIMEOUT_MS = 30_000;
-
 type PendingRelay = {
   event: MessageEvent;
   timeout: number;
@@ -16,6 +14,7 @@ const writerChannel = new BroadcastChannel(WRITER_CHANNEL_NAME);
 const pending = new Map<string, PendingRelay>();
 let writerReady = false;
 let ensuringWriter: Promise<void> | null = null;
+let bridgeInvalidated = false;
 
 function relayKey(requestId: string, type: string): string {
   return `${requestId}:${type}`;
@@ -25,11 +24,74 @@ function respond(event: MessageEvent, response: BridgeResponse): void {
   (event.source as WindowProxy | null)?.postMessage(response, { targetOrigin: event.origin });
 }
 
+function runtimeAvailable(): boolean {
+  try {
+    return Boolean(chrome.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+function invalidatedError(cause?: unknown): DownloadError {
+  return new DownloadError("扩展写入桥接页已失效，正在重新连接", "BRIDGE_UNAVAILABLE", cause === undefined ? undefined : { cause });
+}
+
+function notifyInvalidated(cause?: unknown): void {
+  if (bridgeInvalidated) return;
+  bridgeInvalidated = true;
+  writerReady = false;
+  const error = invalidatedError(cause);
+  for (const relay of pending.values()) {
+    window.clearTimeout(relay.timeout);
+    respond(relay.event, {
+      source: "telegram-media-downloader-bridge",
+      type: `${(relay.event.data as BridgeRequest).type}:response`,
+      requestId: (relay.event.data as BridgeRequest).requestId,
+      ok: false,
+      error: error.message,
+      errorCode: error.code
+    });
+  }
+  pending.clear();
+  try {
+    window.parent.postMessage({
+      source: "telegram-media-downloader-bridge",
+      type: "bridge:invalidated",
+      ok: false,
+      error: error.message,
+      errorCode: error.code
+    } satisfies BridgeResponse, eventOrigin());
+  } catch {
+    // The parent may already be unloading; the next request will rebuild the frame.
+  }
+}
+
+async function sendRuntimeMessage<T>(message: unknown): Promise<T> {
+  if (bridgeInvalidated || !runtimeAvailable()) {
+    const error = invalidatedError();
+    notifyInvalidated(error);
+    throw error;
+  }
+  try {
+    return await chrome.runtime.sendMessage(message) as T;
+  } catch (error) {
+    if (!runtimeAvailable() || (error instanceof Error && /extension context invalidated/i.test(error.message))) {
+      notifyInvalidated(error);
+      throw invalidatedError(error);
+    }
+    throw error;
+  }
+}
+
+function relayTimeout(type: string): number {
+  return type === "file:close" ? FILE_COMMIT_TIMEOUT_MS : BRIDGE_REQUEST_TIMEOUT_MS;
+}
+
 async function ensureWriter(): Promise<void> {
   if (writerReady) return;
   if (!ensuringWriter) {
     ensuringWriter = (async () => {
-      const response = await chrome.runtime.sendMessage({ type: "ensure-offscreen-writer" }) as { ok?: boolean; error?: string } | undefined;
+      const response = await sendRuntimeMessage<{ ok?: boolean; error?: string } | undefined>({ type: "ensure-offscreen-writer" });
       if (!response?.ok) throw new Error(response?.error ?? "无法启动扩展写入器");
       writerReady = true;
     })().finally(() => { ensuringWriter = null; });
@@ -50,7 +112,7 @@ async function forwardRequest(event: MessageEvent, request: BridgeRequest): Prom
       ok: false,
       error: `扩展写入器请求超时：${request.type}`
     });
-  }, RELAY_TIMEOUT_MS);
+  }, relayTimeout(request.type));
   pending.set(key, { event, timeout });
   writerChannel.postMessage(request);
 }
@@ -72,6 +134,10 @@ window.addEventListener("message", (event: MessageEvent) => {
   const request = event.data as BridgeRequest;
   if (request?.source !== "telegram-media-downloader" || typeof request.type !== "string" || typeof request.requestId !== "string") return;
   if (request.type === "bridge:ping") {
+    if (bridgeInvalidated || !runtimeAvailable()) {
+      notifyInvalidated();
+      return;
+    }
     respond(event, {
       source: "telegram-media-downloader-bridge",
       type: "bridge:ready",
@@ -81,7 +147,7 @@ window.addEventListener("message", (event: MessageEvent) => {
     return;
   }
   if (request.type === "page:stats") {
-    void chrome.runtime.sendMessage({
+    void sendRuntimeMessage({
       type: "page-stats",
       payload: request.payload?.stats
     }).then(() => respond(event, {
@@ -120,6 +186,8 @@ if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
         type: "settings:changed",
         payload: { concurrency: settings.concurrency }
       }, eventOrigin());
+    }).catch((error) => {
+      if (!runtimeAvailable()) notifyInvalidated(error);
     });
   });
 }

@@ -1,4 +1,4 @@
-import { BRIDGE_FRAME_ATTRIBUTE, BRIDGE_READY_ATTRIBUTE, BridgeResponse, BridgeStatus } from "../shared/protocol";
+import { BRIDGE_FRAME_ATTRIBUTE, BRIDGE_READY_ATTRIBUTE, BridgeResponse, BridgeStatus, FILE_COMMIT_TIMEOUT_MS } from "../shared/protocol";
 import { DownloadError, DownloadErrorCode, errorCode } from "../core/errors";
 
 type PendingRequest = {
@@ -28,8 +28,9 @@ export class BridgeClient {
     return await this.request("status", {}, undefined, [], 5_000) as unknown as BridgeStatus;
   }
 
-  async startFile(requestId: string, fileName: string, mimeType?: string): Promise<void> {
-    await this.request("file:start", { fileName, mimeType }, requestId);
+  async startFile(requestId: string, fileName: string, mimeType?: string, replaceEmpty = false): Promise<string> {
+    const response = await this.request("file:start", { fileName, mimeType, replaceEmpty }, requestId);
+    return typeof response.fileName === "string" ? response.fileName : fileName;
   }
 
   async writeChunk(requestId: string, chunk: Uint8Array): Promise<number> {
@@ -39,7 +40,7 @@ export class BridgeClient {
   }
 
   async closeFile(requestId: string): Promise<number> {
-    const response = await this.request("file:close", {}, requestId);
+    const response = await this.request("file:close", {}, requestId, [], FILE_COMMIT_TIMEOUT_MS);
     return typeof response.bytesWritten === "number" ? response.bytesWritten : 0;
   }
 
@@ -85,7 +86,7 @@ export class BridgeClient {
       const onReady = (event: MessageEvent): void => {
         const response = event.data as BridgeResponse;
         if (!candidate?.contentWindow || event.source !== candidate.contentWindow || event.origin !== candidateOrigin) return;
-        if (response?.source !== "telegram-media-downloader-bridge" || response.type !== "bridge:ready" || response.requestId !== pingRequestId) return;
+        if (response?.source !== "telegram-media-downloader-bridge" || response.type !== "bridge:ready" || response.requestId !== pingRequestId || response.ok !== true) return;
         settled = true;
         cleanup();
         candidate.setAttribute(BRIDGE_READY_ATTRIBUTE, "");
@@ -230,6 +231,16 @@ export class BridgeClient {
     if (!this.frame?.contentWindow || event.source !== this.frame.contentWindow || event.origin !== this.frameOrigin) return;
     const response = event.data as BridgeResponse;
     if (response?.source !== "telegram-media-downloader-bridge") return;
+    if (response.type === "bridge:invalidated") {
+      this.verifiedWindow = null;
+      this.frameOrigin = "";
+      for (const request of this.pending.values()) {
+        window.clearTimeout(request.timeout);
+        request.reject(new DownloadError(response.error ?? "扩展写入桥接页已失效，正在重新连接", "BRIDGE_UNAVAILABLE"));
+      }
+      this.pending.clear();
+      return;
+    }
     if (response.type === "settings:changed" && response.payload) {
       this.onSettingsChanged?.(response.payload as unknown as BridgeStatus);
       return;

@@ -1,6 +1,8 @@
 export const BRIDGE_FRAME_ATTRIBUTE = "data-tmd-bridge";
 export const BRIDGE_READY_ATTRIBUTE = "data-tmd-bridge-ready";
 export const WRITER_CHANNEL_NAME = "telegram-media-downloader-writer";
+export const BRIDGE_REQUEST_TIMEOUT_MS = 30_000;
+export const FILE_COMMIT_TIMEOUT_MS = 10 * 60_000;
 
 export type BridgeStatus = {
   folderName: string | null;
