@@ -4,9 +4,18 @@ const FRAME_ID = "telegram-media-downloader-bridge";
 
 function injectBridge(): void {
   if (document.getElementById(FRAME_ID)) return;
+  let bridgeUrl: string;
+  try {
+    // Reloading the extension invalidates this isolated world; a pending DOMContentLoaded callback
+    // would otherwise throw "Extension context invalidated" from chrome.runtime.
+    if (!chrome.runtime?.id) return;
+    bridgeUrl = chrome.runtime.getURL("bridge.html");
+  } catch {
+    return;
+  }
   const frame = document.createElement("iframe");
   frame.id = FRAME_ID;
-  frame.src = chrome.runtime.getURL("bridge.html");
+  frame.src = bridgeUrl;
   frame.setAttribute(BRIDGE_FRAME_ATTRIBUTE, "");
   frame.setAttribute("aria-hidden", "true");
   frame.tabIndex = -1;
