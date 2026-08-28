@@ -12,27 +12,38 @@ describe("bridge client readiness", () => {
     vi.useFakeTimers();
     const client = new BridgeClient();
     const first = client.status();
-    const firstExpectation = expect(first).rejects.toThrow("桥接页未能加载");
-    await vi.advanceTimersByTimeAsync(10_050);
+    const firstExpectation = expect(first).rejects.toThrow("桥接页不存在");
+    await vi.advanceTimersByTimeAsync(3_050);
     await firstExpectation;
 
     const frame = document.createElement("iframe");
     frame.src = "about:blank";
     frame.setAttribute(BRIDGE_FRAME_ATTRIBUTE, "");
-    frame.setAttribute(BRIDGE_READY_ATTRIBUTE, "");
     document.body.appendChild(frame);
     expect(frame.contentWindow).not.toBeNull();
     const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
 
     const second = client.status();
-    await vi.waitFor(() => expect(postMessage).toHaveBeenCalledOnce());
-    const request = postMessage.mock.calls[0]![0] as { requestId: string; type: string };
+    await vi.waitFor(() => expect(postMessage).toHaveBeenCalled());
+    const ping = postMessage.mock.calls.map((call) => call[0] as { requestId: string; type: string }).find((request) => request.type === "bridge:ping")!;
     window.dispatchEvent(new MessageEvent("message", {
       source: frame.contentWindow,
       origin: "null",
       data: {
         source: "telegram-media-downloader-bridge",
-        type: `${request.type}:response`,
+        type: "bridge:ready",
+        requestId: ping.requestId,
+        ok: true
+      }
+    }));
+    await vi.waitFor(() => expect(postMessage.mock.calls.some((call) => (call[0] as { type?: string }).type === "status")).toBe(true));
+    const request = postMessage.mock.calls.map((call) => call[0] as { requestId: string; type: string }).find((item) => item.type === "status")!;
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: "null",
+      data: {
+        source: "telegram-media-downloader-bridge",
+        type: "status:response",
         requestId: request.requestId,
         ok: true,
         payload: { folderName: "Downloads", permission: "granted", concurrency: 2 }
@@ -54,17 +65,31 @@ describe("bridge client readiness", () => {
     const client = new BridgeClient();
 
     const status = client.status();
-    await vi.waitFor(() => expect(stalePostMessage).toHaveBeenCalledOnce());
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(stalePostMessage.mock.calls.length).toBeGreaterThan(0);
+    expect(stalePostMessage.mock.calls.every((call) => (call[0] as { type?: string }).type === "bridge:ping")).toBe(true);
+    await vi.advanceTimersByTimeAsync(2_950);
 
     const replacement = document.querySelector<HTMLIFrameElement>(`iframe[${BRIDGE_FRAME_ATTRIBUTE}]`)!;
     expect(replacement).not.toBe(staleFrame);
     const replacementPostMessage = vi.spyOn(replacement.contentWindow!, "postMessage");
-    replacement.dispatchEvent(new Event("load"));
     await vi.advanceTimersByTimeAsync(50);
-    await vi.waitFor(() => expect(replacementPostMessage).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(replacementPostMessage).toHaveBeenCalled());
 
-    const request = replacementPostMessage.mock.calls[0]![0] as { requestId: string; type: string };
+    const ping = replacementPostMessage.mock.calls.map((call) => call[0] as { requestId: string; type: string }).find((request) => request.type === "bridge:ping")!;
+    window.dispatchEvent(new MessageEvent("message", {
+      source: replacement.contentWindow,
+      origin: "null",
+      data: {
+        source: "telegram-media-downloader-bridge",
+        type: "bridge:ready",
+        requestId: ping.requestId,
+        ok: true
+      }
+    }));
+    await vi.waitFor(() => expect(replacementPostMessage.mock.calls.some((call) => (call[0] as { type?: string }).type === "status")).toBe(true));
+
+    const request = replacementPostMessage.mock.calls.map((call) => call[0] as { requestId: string; type: string }).find((item) => item.type === "status")!;
     window.dispatchEvent(new MessageEvent("message", {
       source: replacement.contentWindow,
       origin: "null",
