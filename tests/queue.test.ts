@@ -100,6 +100,27 @@ describe("DownloadQueue", () => {
     gate.resolve();
   });
 
+  it("pauses, resumes, and cancels multiple tasks in one operation", async () => {
+    const gate = deferred();
+    const states = new Map<string, string>();
+    const queue = new DownloadQueue<number>(async (_task, control) => {
+      await gate.promise;
+      await control.waitIfPaused();
+    }, 2);
+    for (let value = 0; value < 4; value += 1) {
+      const key = String(value);
+      queue.enqueue({ key, value, onState: (state) => states.set(key, state) });
+    }
+
+    expect(queue.pauseAll(["0", "1"])).toBe(2);
+    expect(states.get("0")).toBe("paused");
+    expect(queue.resumeAll(["0", "1"])).toBe(2);
+    expect(states.get("1")).toBe("running");
+    expect(queue.cancelAll(["0", "1", "2", "3"])).toBe(4);
+    expect([...states.values()].every((state) => state === "cancelled")).toBe(true);
+    gate.resolve();
+  });
+
   it("conserves terminal states across 500 mixed queue tasks", async () => {
     const gate = deferred();
     const finalStates = new Map<string, string>();
