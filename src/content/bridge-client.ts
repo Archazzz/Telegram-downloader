@@ -68,7 +68,9 @@ export class BridgeClient {
   }
 
   private async waitUntilReady(): Promise<void> {
-    if (this.frame?.isConnected && this.frame.contentWindow && this.verifiedWindow === this.frame.contentWindow) return;
+    // A WindowProxy survives cross-origin navigations, so identity alone cannot detect a dead bridge:
+    // after an extension reload the frame falls back to a same-origin about:blank (readable contentDocument).
+    if (this.frame?.isConnected && this.frame.contentWindow && this.verifiedWindow === this.frame.contentWindow && !this.frame.contentDocument) return;
     this.frame = null;
     this.verifiedWindow = null;
     this.frameOrigin = "";
@@ -192,7 +194,11 @@ export class BridgeClient {
     await this.waitUntilReady();
     const requestId = providedRequestId ?? crypto.randomUUID();
     const pendingKey = `${requestId}:${type}`;
-    if (!this.frame?.contentWindow) throw new Error("扩展写入桥接页不可用");
+    if (!this.frame?.contentWindow || this.frame.contentDocument) {
+      // Same-origin document means the bridge page is gone (extension reload); force a rebuild instead of
+      // posting with a strict targetOrigin, which the browser would report as an uncatchable console error.
+      throw new DownloadError("扩展写入桥接页已失效，正在重新连接", "BRIDGE_UNAVAILABLE");
+    }
 
     const response = new Promise<Record<string, unknown>>((resolve, reject) => {
       const timeout = window.setTimeout(() => {

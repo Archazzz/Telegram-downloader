@@ -21,6 +21,8 @@ describe("bridge client readiness", () => {
     frame.setAttribute(BRIDGE_FRAME_ATTRIBUTE, "");
     document.body.appendChild(frame);
     expect(frame.contentWindow).not.toBeNull();
+    // A live bridge page is cross-origin, so contentDocument stays null (happy-dom would expose one).
+    Object.defineProperty(frame, "contentDocument", { get: () => null, configurable: true });
     const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
 
     const second = client.status();
@@ -72,6 +74,7 @@ describe("bridge client readiness", () => {
 
     const replacement = document.querySelector<HTMLIFrameElement>(`iframe[${BRIDGE_FRAME_ATTRIBUTE}]`)!;
     expect(replacement).not.toBe(staleFrame);
+    Object.defineProperty(replacement, "contentDocument", { get: () => null, configurable: true });
     const replacementPostMessage = vi.spyOn(replacement.contentWindow!, "postMessage");
     await vi.advanceTimersByTimeAsync(50);
     await vi.waitFor(() => expect(replacementPostMessage).toHaveBeenCalled());
@@ -112,6 +115,7 @@ describe("bridge client readiness", () => {
     frame.src = "about:blank";
     frame.setAttribute(BRIDGE_FRAME_ATTRIBUTE, "");
     document.body.appendChild(frame);
+    Object.defineProperty(frame, "contentDocument", { get: () => null, configurable: true });
     const stalePostMessage = vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation((message) => {
       if ((message as { type?: string }).type === "status") {
         throw new DOMException("The target origin does not match the recipient window's origin", "SecurityError");
@@ -136,6 +140,7 @@ describe("bridge client readiness", () => {
 
     const replacement = document.querySelector<HTMLIFrameElement>(`iframe[${BRIDGE_FRAME_ATTRIBUTE}]`)!;
     expect(replacement).not.toBe(frame);
+    Object.defineProperty(replacement, "contentDocument", { get: () => null, configurable: true });
     const replacementPostMessage = vi.spyOn(replacement.contentWindow!, "postMessage");
     await vi.advanceTimersByTimeAsync(50);
     await vi.waitFor(() => expect(replacementPostMessage).toHaveBeenCalled());
@@ -168,5 +173,79 @@ describe("bridge client readiness", () => {
     }));
 
     await expect(status).resolves.toMatchObject({ permission: "granted" });
+  });
+
+  it("rebuilds the bridge when the verified frame falls back to a same-origin document after a reload", async () => {
+    vi.useFakeTimers();
+    const frame = document.createElement("iframe");
+    frame.id = "telegram-media-downloader-bridge";
+    frame.src = "about:blank";
+    frame.setAttribute(BRIDGE_FRAME_ATTRIBUTE, "");
+    document.body.appendChild(frame);
+    // A live bridge page is cross-origin (contentDocument null); after an extension reload the dead
+    // frame falls back to a same-origin about:blank whose document becomes readable.
+    let stale = false;
+    Object.defineProperty(frame, "contentDocument", { get: () => (stale ? document : null), configurable: true });
+    const framePostMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    const client = new BridgeClient();
+
+    const first = client.status();
+    await vi.waitFor(() => expect(framePostMessage).toHaveBeenCalled());
+    const ping = framePostMessage.mock.calls.map((call) => call[0] as { requestId: string; type: string }).find((request) => request.type === "bridge:ping")!;
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: "null",
+      data: { source: "telegram-media-downloader-bridge", type: "bridge:ready", requestId: ping.requestId, ok: true }
+    }));
+    await vi.waitFor(() => expect(framePostMessage.mock.calls.some((call) => (call[0] as { type?: string }).type === "status")).toBe(true));
+    const firstRequest = framePostMessage.mock.calls.map((call) => call[0] as { requestId: string; type: string }).find((item) => item.type === "status")!;
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: "null",
+      data: {
+        source: "telegram-media-downloader-bridge",
+        type: "status:response",
+        requestId: firstRequest.requestId,
+        ok: true,
+        payload: { folderName: "Downloads", permission: "granted", concurrency: 2 }
+      }
+    }));
+    await expect(first).resolves.toMatchObject({ permission: "granted" });
+
+    stale = true;
+    framePostMessage.mockClear();
+
+    const second = client.status();
+    await vi.advanceTimersByTimeAsync(3_050);
+    // The stale window must never receive another request, so no strict-targetOrigin postMessage can misfire.
+    expect(framePostMessage.mock.calls.filter((call) => (call[0] as { type?: string }).type === "status")).toHaveLength(0);
+
+    const replacement = document.querySelector<HTMLIFrameElement>(`iframe[${BRIDGE_FRAME_ATTRIBUTE}]`)!;
+    expect(replacement).not.toBe(frame);
+    Object.defineProperty(replacement, "contentDocument", { get: () => null, configurable: true });
+    const replacementPostMessage = vi.spyOn(replacement.contentWindow!, "postMessage");
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(replacementPostMessage).toHaveBeenCalled());
+    const replacementPing = replacementPostMessage.mock.calls.map((call) => call[0] as { requestId: string; type: string }).find((request) => request.type === "bridge:ping")!;
+    window.dispatchEvent(new MessageEvent("message", {
+      source: replacement.contentWindow,
+      origin: "null",
+      data: { source: "telegram-media-downloader-bridge", type: "bridge:ready", requestId: replacementPing.requestId, ok: true }
+    }));
+    await vi.waitFor(() => expect(replacementPostMessage.mock.calls.some((call) => (call[0] as { type?: string }).type === "status")).toBe(true));
+
+    const secondRequest = replacementPostMessage.mock.calls.map((call) => call[0] as { requestId: string; type: string }).find((item) => item.type === "status")!;
+    window.dispatchEvent(new MessageEvent("message", {
+      source: replacement.contentWindow,
+      origin: "null",
+      data: {
+        source: "telegram-media-downloader-bridge",
+        type: "status:response",
+        requestId: secondRequest.requestId,
+        ok: true,
+        payload: { folderName: "Downloads", permission: "granted", concurrency: 2 }
+      }
+    }));
+    await expect(second).resolves.toMatchObject({ permission: "granted" });
   });
 });
