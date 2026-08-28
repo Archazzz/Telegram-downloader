@@ -80,6 +80,25 @@ window.addEventListener("message", (event: MessageEvent) => {
     });
     return;
   }
+  if (request.type === "page:stats") {
+    void chrome.runtime.sendMessage({
+      type: "page-stats",
+      payload: request.payload?.stats
+    }).then(() => respond(event, {
+      source: "telegram-media-downloader-bridge",
+      type: "page:stats:response",
+      requestId: request.requestId,
+      ok: true
+    })).catch((error) => respond(event, {
+      source: "telegram-media-downloader-bridge",
+      type: "page:stats:response",
+      requestId: request.requestId,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      errorCode: errorCode(error)
+    }));
+    return;
+  }
   void forwardRequest(event, request).catch((error) => {
     respond(event, {
       source: "telegram-media-downloader-bridge",

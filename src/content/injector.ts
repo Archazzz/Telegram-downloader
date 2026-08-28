@@ -25,15 +25,3 @@ function injectBridge(): void {
 
 if (document.documentElement) injectBridge();
 else document.addEventListener("DOMContentLoaded", injectBridge, { once: true });
-
-window.addEventListener("message", (event: MessageEvent) => {
-  if (event.source !== window || event.origin !== window.location.origin) return;
-  const data = event.data as { source?: string; type?: string; payload?: unknown };
-  if (data?.source !== "telegram-media-downloader" || data.type !== "page-stats") return;
-  try {
-    if (!chrome.runtime?.id) return;
-    void chrome.runtime.sendMessage({ type: "page-stats", payload: data.payload }).catch(() => undefined);
-  } catch {
-    // Reloading an extension invalidates the old isolated-world context until this tab refreshes.
-  }
-});

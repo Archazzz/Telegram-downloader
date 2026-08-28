@@ -526,18 +526,14 @@ function pruneRegistry(): void {
 
 function postStats(): void {
   const items = [...downloadItems.values()];
-  window.postMessage({
-    source: "telegram-media-downloader",
-    type: "page-stats",
-    payload: {
-      mediaCount: mediaById.size,
-      messageCount: groups.size,
-      queueActive: queue.activeCount,
-      queuePending: queue.queuedCount,
-      queueErrors: items.filter((item) => item.state === "error").length,
-      queueComplete: items.filter((item) => item.state === "success" || item.state === "cancelled").length
-    }
-  }, window.location.origin);
+  bridge.updatePageStats({
+    mediaCount: mediaById.size,
+    messageCount: groups.size,
+    queueActive: queue.activeCount,
+    queuePending: queue.queuedCount,
+    queueErrors: items.filter((item) => item.state === "error").length,
+    queueComplete: items.filter((item) => item.state === "success" || item.state === "cancelled").length
+  });
 }
 
 async function streamResponse(
