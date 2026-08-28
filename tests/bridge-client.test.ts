@@ -41,4 +41,42 @@ describe("bridge client readiness", () => {
 
     await expect(second).resolves.toMatchObject({ folderName: "Downloads", permission: "granted" });
   });
+
+  it("recreates a stale bridge iframe and retries status once after an extension reload", async () => {
+    vi.useFakeTimers();
+    const staleFrame = document.createElement("iframe");
+    staleFrame.id = "telegram-media-downloader-bridge";
+    staleFrame.src = "about:blank";
+    staleFrame.setAttribute(BRIDGE_FRAME_ATTRIBUTE, "");
+    staleFrame.setAttribute(BRIDGE_READY_ATTRIBUTE, "");
+    document.body.appendChild(staleFrame);
+    const stalePostMessage = vi.spyOn(staleFrame.contentWindow!, "postMessage");
+    const client = new BridgeClient();
+
+    const status = client.status();
+    await vi.waitFor(() => expect(stalePostMessage).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const replacement = document.querySelector<HTMLIFrameElement>(`iframe[${BRIDGE_FRAME_ATTRIBUTE}]`)!;
+    expect(replacement).not.toBe(staleFrame);
+    const replacementPostMessage = vi.spyOn(replacement.contentWindow!, "postMessage");
+    replacement.dispatchEvent(new Event("load"));
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(replacementPostMessage).toHaveBeenCalledOnce());
+
+    const request = replacementPostMessage.mock.calls[0]![0] as { requestId: string; type: string };
+    window.dispatchEvent(new MessageEvent("message", {
+      source: replacement.contentWindow,
+      origin: "null",
+      data: {
+        source: "telegram-media-downloader-bridge",
+        type: "status:response",
+        requestId: request.requestId,
+        ok: true,
+        payload: { folderName: "Downloads", permission: "granted", concurrency: 2 }
+      }
+    }));
+
+    await expect(status).resolves.toMatchObject({ folderName: "Downloads", permission: "granted" });
+  });
 });
