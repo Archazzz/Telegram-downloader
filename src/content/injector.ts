@@ -1,4 +1,4 @@
-import { BRIDGE_FRAME_ATTRIBUTE, BRIDGE_READY_ATTRIBUTE } from "../shared/protocol";
+import { BRIDGE_FRAME_ATTRIBUTE } from "../shared/protocol";
 
 const FRAME_ID = "telegram-media-downloader-bridge";
 
@@ -8,7 +8,6 @@ function injectBridge(): void {
   frame.id = FRAME_ID;
   frame.src = chrome.runtime.getURL("bridge.html");
   frame.setAttribute(BRIDGE_FRAME_ATTRIBUTE, "");
-  frame.addEventListener("load", () => frame.setAttribute(BRIDGE_READY_ATTRIBUTE, ""), { once: true });
   frame.setAttribute("aria-hidden", "true");
   frame.tabIndex = -1;
   Object.assign(frame.style, {
@@ -31,5 +30,10 @@ window.addEventListener("message", (event: MessageEvent) => {
   if (event.source !== window || event.origin !== window.location.origin) return;
   const data = event.data as { source?: string; type?: string; payload?: unknown };
   if (data?.source !== "telegram-media-downloader" || data.type !== "page-stats") return;
-  void chrome.runtime.sendMessage({ type: "page-stats", payload: data.payload });
+  try {
+    if (!chrome.runtime?.id) return;
+    void chrome.runtime.sendMessage({ type: "page-stats", payload: data.payload }).catch(() => undefined);
+  } catch {
+    // Reloading an extension invalidates the old isolated-world context until this tab refreshes.
+  }
 });
