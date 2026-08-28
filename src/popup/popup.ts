@@ -1,10 +1,8 @@
 import { authorizeDirectory, chooseDirectory, getDestinationStatus } from "../shared/destination";
 import { normalizeDownloadError } from "../core/errors";
+import { PageStats } from "../core/ui-state";
 import { getSettings, MAX_CONCURRENCY, MIN_CONCURRENCY, saveSettings } from "../shared/settings";
 import { activateWriterDirectory, getWriterDirectoryStatus } from "../shared/writer";
-
-type PageStats = { mediaCount: number; messageCount: number; queueActive: number; queuePending: number };
-const RESPONSIBILITY_KEY = "responsibilityAccepted";
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -21,13 +19,13 @@ async function renderDestination(): Promise<void> {
   element("folder-name").textContent = status.name ?? "尚未选择文件夹";
   const labels = {
     granted: "已授权，可直接保存",
-    prompt: "需要重新授权",
-    denied: "授权已被拒绝",
+    prompt: "需要授权后才能写入",
+    denied: "目录访问已关闭，请重新选择",
     unsupported: "当前浏览器不支持目录写入",
     missing: "请选择媒体保存位置"
   } as const;
   element("folder-status").textContent = labels[status.permission];
-  element<HTMLButtonElement>("choose-folder").textContent = status.permission === "missing" ? "选择" : status.permission === "prompt" ? "授权" : "更换";
+  element<HTMLButtonElement>("choose-folder").textContent = status.permission === "missing" ? "选择" : status.permission === "prompt" ? "授权" : status.permission === "denied" ? "重新选择" : "更换";
 }
 
 async function selectConcurrency(value: number): Promise<void> {
@@ -60,25 +58,29 @@ async function renderStats(): Promise<void> {
   if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) return;
   const response = await chrome.runtime.sendMessage({ type: "get-active-stats" }) as { stats?: PageStats | null } | undefined;
   const stats = response?.stats;
-  if (!stats) return;
+  if (!stats) {
+    element("media-count").textContent = "未连接 Telegram 页面";
+    element("media-detail").textContent = "打开 Telegram Web 后自动检索";
+    document.querySelector(".live-dot")?.classList.remove("is-connected");
+    return;
+  }
   element("media-count").textContent = `已发现 ${stats.mediaCount} 个媒体`;
-  element("media-detail").textContent = `${stats.messageCount} 条媒体消息 · ${stats.queueActive} 下载中 · ${stats.queuePending} 等待`;
+  element("media-detail").textContent = `${stats.messageCount} 条媒体消息 · ${stats.queueActive} 下载中 · ${stats.queuePending} 等待${stats.queueErrors > 0 ? ` · ${stats.queueErrors} 失败` : ""}`;
   document.querySelector(".live-dot")?.classList.add("is-connected");
 }
 
-async function renderResponsibilityNotice(): Promise<void> {
-  const notice = element<HTMLElement>("responsibility-notice");
-  const stored = await chrome.storage.local.get(RESPONSIBILITY_KEY) as Record<string, unknown>;
-  notice.hidden = stored[RESPONSIBILITY_KEY] === true;
-}
-
-document.addEventListener("DOMContentLoaded", () => {
-  void Promise.all([renderDestination(), renderSettings(), renderStats(), renderResponsibilityNotice()]);
-  element<HTMLButtonElement>("accept-responsibility").addEventListener("click", async () => {
-    await chrome.storage.local.set({ [RESPONSIBILITY_KEY]: true });
-    element<HTMLElement>("responsibility-notice").hidden = true;
+export function initPopup(): void {
+  void Promise.all([renderDestination(), renderSettings(), renderStats()]);
+  chrome.runtime.onMessage.addListener((message: unknown) => {
+    const typed = message as { type?: string };
+    if (typed.type === "page-stats-updated") void renderStats();
+    return false;
   });
   element<HTMLButtonElement>("choose-folder").addEventListener("click", async () => {
+    const button = element<HTMLButtonElement>("choose-folder");
+    const previousLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = "处理中…";
     try {
       const status = await getDestinationStatus();
       const handle = status.permission === "prompt" ? await authorizeDirectory() : await chooseDirectory();
@@ -88,6 +90,12 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       element("folder-status").textContent = normalizeDownloadError(error).message;
+      window.setTimeout(() => void renderDestination(), 4200);
+    } finally {
+      button.disabled = false;
+      if (button.textContent === "处理中…") button.textContent = previousLabel;
     }
   });
-});
+}
+
+document.addEventListener("DOMContentLoaded", initPopup, { once: true });
