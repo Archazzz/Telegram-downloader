@@ -1,4 +1,10 @@
-import { WRITER_CHANNEL_NAME, WriterControlRequest, WriterControlResponse } from "./protocol";
+import {
+  WRITER_CHANNEL_NAME,
+  WriterControlRequest,
+  WriterControlResponse,
+  WriterLifecycleRequest,
+  WriterLifecycleResponse
+} from "./protocol";
 
 type EnsureWriterResponse = {
   ok?: boolean;
@@ -20,8 +26,39 @@ async function writerRequest(
   type: WriterControlRequest["type"],
   handle?: FileSystemDirectoryHandle
 ): Promise<WriterDirectoryStatus> {
-  await ensureWriterDocument();
   const channel = new BroadcastChannel(WRITER_CHANNEL_NAME);
+  const ownerId = crypto.randomUUID();
+  try {
+    await ensureWriterDocument();
+  } catch (error) {
+    channel.close();
+    throw error;
+  }
+  await new Promise<void>((resolve, reject) => {
+    let onReady: (event: MessageEvent<WriterLifecycleResponse>) => void;
+    const ping = (): void => channel.postMessage({
+      source: "telegram-media-downloader-bridge-lifecycle",
+      type: "writer:ping",
+      ownerId
+    } satisfies WriterLifecycleRequest);
+    const interval = window.setInterval(ping, 100);
+    const timeout = window.setTimeout(() => {
+      channel.removeEventListener("message", onReady);
+      window.clearInterval(interval);
+      channel.close();
+      reject(new Error("扩展写入器未能就绪"));
+    }, 5_000);
+    onReady = (event: MessageEvent<WriterLifecycleResponse>): void => {
+      const response = event.data;
+      if (response?.source !== "telegram-media-downloader-writer" || response.type !== "writer:ready" || response.ownerId !== ownerId) return;
+      window.clearTimeout(timeout);
+      window.clearInterval(interval);
+      channel.removeEventListener("message", onReady);
+      resolve();
+    };
+    channel.addEventListener("message", onReady);
+    ping();
+  });
   const requestId = crypto.randomUUID();
   return new Promise((resolve, reject) => {
     const timeout = window.setTimeout(() => {

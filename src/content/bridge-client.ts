@@ -7,6 +7,8 @@ type PendingRequest = {
   timeout: number;
 };
 
+const RETRYABLE_BRIDGE_REQUESTS = new Set(["status", "page:stats", "file:start", "file:close", "file:abort"]);
+
 export class BridgeClient {
   private frame: HTMLIFrameElement | null = null;
   private verifiedWindow: WindowProxy | null = null;
@@ -39,13 +41,13 @@ export class BridgeClient {
     return typeof response.bytesWritten === "number" ? response.bytesWritten : 0;
   }
 
-  async closeFile(requestId: string): Promise<number> {
-    const response = await this.request("file:close", {}, requestId, [], FILE_COMMIT_TIMEOUT_MS);
+  async closeFile(requestId: string, expectedBytes?: number): Promise<number> {
+    const response = await this.request("file:close", { expectedBytes }, requestId, [], FILE_COMMIT_TIMEOUT_MS);
     return typeof response.bytesWritten === "number" ? response.bytesWritten : 0;
   }
 
   async abortFile(requestId: string): Promise<void> {
-    await this.send("file:abort", {}, requestId).catch(() => undefined);
+    await this.request("file:abort", {}, requestId, [], 5_000).catch(() => undefined);
   }
 
   updatePageStats(stats: Record<string, unknown>): void {
@@ -179,7 +181,8 @@ export class BridgeClient {
       failedEpoch = this.frameEpoch;
       return await this.send(type, payload, providedRequestId, transfer, timeoutMs);
     } catch (error) {
-      if (errorCode(error) !== "BRIDGE_UNAVAILABLE") throw error;
+      const code = errorCode(error);
+      if ((code !== "BRIDGE_UNAVAILABLE" && code !== "BRIDGE_TIMEOUT") || !RETRYABLE_BRIDGE_REQUESTS.has(type)) throw error;
       await this.recoverBridge(failedEpoch);
       return await this.send(type, payload, providedRequestId, transfer, timeoutMs);
     }
@@ -204,7 +207,7 @@ export class BridgeClient {
     const response = new Promise<Record<string, unknown>>((resolve, reject) => {
       const timeout = window.setTimeout(() => {
         this.pending.delete(pendingKey);
-        reject(new DownloadError(`写入桥接请求超时：${type}`, "BRIDGE_UNAVAILABLE"));
+        reject(new DownloadError(`写入桥接请求超时：${type}`, "BRIDGE_TIMEOUT"));
       }, timeoutMs);
       this.pending.set(pendingKey, { resolve, reject, timeout });
     });

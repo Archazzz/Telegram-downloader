@@ -71,6 +71,47 @@ describe("offscreen file store", () => {
     expect(await store.start(directory, "second", "video.mp4")).toBe("video (1).mp4");
   });
 
+  it("treats repeated start and close requests as idempotent", async () => {
+    const directory = mockDirectory();
+    const store = new FileStore();
+    expect(await store.start(directory, "same-request", "video.mp4")).toBe("video.mp4");
+    expect(await store.start(directory, "same-request", "video.mp4")).toBe("video.mp4");
+    await store.write("same-request", new Uint8Array(new ArrayBuffer(6)));
+
+    const [first, second] = await Promise.all([
+      store.close("same-request", 6),
+      store.close("same-request", 6)
+    ]);
+    expect(first).toBe(6);
+    expect(second).toBe(6);
+    expect(directory.files.get("video.mp4")?.writable.close).toHaveBeenCalledOnce();
+  });
+
+  it("rejects and removes a file whose committed size is incomplete", async () => {
+    const directory = mockDirectory();
+    const store = new FileStore();
+    await store.start(directory, "short", "video.mp4");
+    await store.write("short", new Uint8Array(new ArrayBuffer(4)));
+    await expect(store.close("short", 8)).rejects.toMatchObject({ code: "WRITE_INTEGRITY" });
+    expect(directory.files.has("video.mp4")).toBe(false);
+  });
+
+  it("reclaims abandoned handles while heartbeats keep active owners alive", async () => {
+    const directory = mockDirectory();
+    const store = new FileStore();
+    await store.start(directory, "active", "active.mp4", false, "tab-active");
+    await store.start(directory, "lost", "lost.mp4", false, "tab-lost");
+    const future = Date.now() + 1_000;
+    const now = vi.spyOn(Date, "now").mockReturnValue(future);
+    store.touchOwner("tab-active");
+
+    expect(await store.reapStale(100, future)).toBe(1);
+    expect(store.openCount).toBe(1);
+    expect(directory.files.has("active.mp4")).toBe(true);
+    now.mockRestore();
+    await store.abortOwner("tab-active");
+  });
+
   it("reuses its own empty reservation after a writer context is lost", async () => {
     const directory = mockDirectory();
     const firstStore = new FileStore();

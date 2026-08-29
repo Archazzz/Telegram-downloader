@@ -1,4 +1,12 @@
-import { BridgeRequest, BridgeResponse, BRIDGE_REQUEST_TIMEOUT_MS, FILE_COMMIT_TIMEOUT_MS, WRITER_CHANNEL_NAME } from "../shared/protocol";
+import {
+  BridgeRequest,
+  BridgeResponse,
+  BRIDGE_REQUEST_TIMEOUT_MS,
+  FILE_COMMIT_TIMEOUT_MS,
+  WRITER_CHANNEL_NAME,
+  WriterLifecycleRequest,
+  WriterLifecycleResponse
+} from "../shared/protocol";
 import { getSettings } from "../shared/settings";
 import { DownloadError, errorCode } from "../core/errors";
 
@@ -11,9 +19,11 @@ type PendingRelay = {
 };
 
 const writerChannel = new BroadcastChannel(WRITER_CHANNEL_NAME);
+const bridgeOwnerId = crypto.randomUUID();
 const pending = new Map<string, PendingRelay>();
 let writerReady = false;
 let ensuringWriter: Promise<void> | null = null;
+let waitingForWriter: Promise<void> | null = null;
 let bridgeInvalidated = false;
 
 function relayKey(requestId: string, type: string): string {
@@ -87,13 +97,52 @@ function relayTimeout(type: string): number {
   return type === "file:close" ? FILE_COMMIT_TIMEOUT_MS : BRIDGE_REQUEST_TIMEOUT_MS;
 }
 
+function lifecycleMessage(type: WriterLifecycleRequest["type"]): WriterLifecycleRequest {
+  return {
+    source: "telegram-media-downloader-bridge-lifecycle",
+    type,
+    ownerId: bridgeOwnerId
+  };
+}
+
+async function waitForWriterReady(): Promise<void> {
+  if (writerReady) return;
+  if (!waitingForWriter) {
+    waitingForWriter = new Promise<void>((resolve, reject) => {
+      let ready: (event: MessageEvent<WriterLifecycleResponse>) => void;
+      const ping = (): void => writerChannel.postMessage(lifecycleMessage("writer:ping"));
+      const interval = window.setInterval(ping, 100);
+      const timeout = window.setTimeout(() => {
+        writerChannel.removeEventListener("message", ready);
+        window.clearInterval(interval);
+        waitingForWriter = null;
+        reject(new DownloadError("扩展写入器未能就绪，请稍后重试", "BRIDGE_UNAVAILABLE"));
+      }, 5_000);
+      ready = (event: MessageEvent<WriterLifecycleResponse>): void => {
+        const response = event.data;
+        if (response?.source !== "telegram-media-downloader-writer" || response.type !== "writer:ready") return;
+        if (response.ownerId && response.ownerId !== bridgeOwnerId) return;
+        writerChannel.removeEventListener("message", ready);
+        window.clearTimeout(timeout);
+        window.clearInterval(interval);
+        writerReady = true;
+        waitingForWriter = null;
+        resolve();
+      };
+      writerChannel.addEventListener("message", ready);
+      ping();
+    });
+  }
+  await waitingForWriter;
+}
+
 async function ensureWriter(): Promise<void> {
   if (writerReady) return;
   if (!ensuringWriter) {
     ensuringWriter = (async () => {
       const response = await sendRuntimeMessage<{ ok?: boolean; error?: string } | undefined>({ type: "ensure-offscreen-writer" });
       if (!response?.ok) throw new Error(response?.error ?? "无法启动扩展写入器");
-      writerReady = true;
+      await waitForWriterReady();
     })().finally(() => { ensuringWriter = null; });
   }
   await ensuringWriter;
@@ -110,11 +159,15 @@ async function forwardRequest(event: MessageEvent, request: BridgeRequest): Prom
       type: `${request.type}:response`,
       requestId: request.requestId,
       ok: false,
-      error: `扩展写入器请求超时：${request.type}`
+      error: `扩展写入器请求超时：${request.type}`,
+      errorCode: "BRIDGE_TIMEOUT"
     });
   }, relayTimeout(request.type));
   pending.set(key, { event, timeout });
-  writerChannel.postMessage(request);
+  writerChannel.postMessage({
+    ...request,
+    payload: { ...request.payload, ownerId: bridgeOwnerId }
+  } satisfies BridgeRequest);
 }
 
 writerChannel.addEventListener("message", (event: MessageEvent<BridgeResponse>) => {
@@ -191,6 +244,14 @@ if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
     });
   });
 }
+
+window.setInterval(() => {
+  if (writerReady) writerChannel.postMessage(lifecycleMessage("writer:heartbeat"));
+}, 30_000);
+
+window.addEventListener("pagehide", () => {
+  writerChannel.postMessage(lifecycleMessage("writer:disconnect"));
+}, { once: true });
 
 function eventOrigin(): string {
   try {

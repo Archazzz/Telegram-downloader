@@ -2,12 +2,21 @@ import { DownloadError, errorCode, normalizeDownloadError } from "../core/errors
 import { FileStore } from "../core/file-store";
 import { buildFileName } from "../core/media";
 import { getDirectoryHandle, queryDirectoryPermission } from "../shared/destination";
-import { BridgeRequest, BridgeResponse, WRITER_CHANNEL_NAME, WriterControlRequest, WriterControlResponse } from "../shared/protocol";
+import {
+  BridgeRequest,
+  BridgeResponse,
+  WRITER_CHANNEL_NAME,
+  WriterControlRequest,
+  WriterControlResponse,
+  WriterLifecycleRequest,
+  WriterLifecycleResponse
+} from "../shared/protocol";
 import { getSettings } from "../shared/settings";
 
 const fileStore = new FileStore(25);
 const writerChannel = new BroadcastChannel(WRITER_CHANNEL_NAME);
 let activeDirectory: FileSystemDirectoryHandle | null = null;
+const STALE_FILE_LEASE_MS = 10 * 60_000;
 
 async function directoryHandle(): Promise<FileSystemDirectoryHandle | null> {
   if (!activeDirectory) activeDirectory = await getDirectoryHandle();
@@ -26,7 +35,8 @@ async function startFile(requestId: string, payload: Record<string, unknown>): P
   const permission = await queryDirectoryPermission(directory);
   if (permission !== "granted") throw new DownloadError("下载目录需要重新授权，请点击扩展图标后重新授权一次", "DIRECTORY_PERMISSION");
   const rawName = typeof payload.fileName === "string" ? payload.fileName : buildFileName({ id: requestId, kind: "video" });
-  const fileName = await fileStore.start(directory, requestId, rawName, payload.replaceEmpty === true);
+  const ownerId = typeof payload.ownerId === "string" ? payload.ownerId : undefined;
+  const fileName = await fileStore.start(directory, requestId, rawName, payload.replaceEmpty === true, ownerId);
   return { fileName };
 }
 
@@ -34,10 +44,6 @@ async function writeChunk(requestId: string, payload: Record<string, unknown>): 
   if (!(payload.chunk instanceof ArrayBuffer)) throw new Error("下载数据块格式无效");
   const chunk = new Uint8Array(payload.chunk);
   return { bytesWritten: await fileStore.write(requestId, chunk) };
-}
-
-async function closeFile(requestId: string): Promise<Record<string, unknown>> {
-  return { bytesWritten: await fileStore.close(requestId) };
 }
 
 async function abortFile(requestId: string): Promise<Record<string, unknown>> {
@@ -50,14 +56,31 @@ async function handleRequest(request: BridgeRequest): Promise<Record<string, unk
     case "status": return statusPayload();
     case "file:start": return startFile(request.requestId, payload);
     case "file:chunk": return writeChunk(request.requestId, payload);
-    case "file:close": return closeFile(request.requestId);
+    case "file:close": {
+      const expectedBytes = typeof payload.expectedBytes === "number" ? payload.expectedBytes : undefined;
+      return { bytesWritten: await fileStore.close(request.requestId, expectedBytes) };
+    }
     case "file:abort": return abortFile(request.requestId);
     default: throw new Error(`未知写入请求：${request.type}`);
   }
 }
 
 writerChannel.addEventListener("message", (event: MessageEvent<BridgeRequest>) => {
-  const request = event.data as BridgeRequest | WriterControlRequest;
+  const request = event.data as BridgeRequest | WriterControlRequest | WriterLifecycleRequest;
+  if (request?.source === "telegram-media-downloader-bridge-lifecycle") {
+    if (request.type === "writer:ping") {
+      writerChannel.postMessage({
+        source: "telegram-media-downloader-writer",
+        type: "writer:ready",
+        ownerId: request.ownerId
+      } satisfies WriterLifecycleResponse);
+    } else if (request.type === "writer:heartbeat") {
+      fileStore.touchOwner(request.ownerId);
+    } else if (request.type === "writer:disconnect") {
+      void fileStore.abortOwner(request.ownerId);
+    }
+    return;
+  }
   if (request?.source === "telegram-media-downloader-popup") {
     const respond = (response: WriterControlResponse): void => writerChannel.postMessage(response);
     if (request.type === "directory:activate" && request.handle?.kind === "directory") {
@@ -108,3 +131,10 @@ writerChannel.addEventListener("message", (event: MessageEvent<BridgeRequest>) =
       } satisfies BridgeResponse);
     });
 });
+
+writerChannel.postMessage({
+  source: "telegram-media-downloader-writer",
+  type: "writer:ready"
+} satisfies WriterLifecycleResponse);
+
+window.setInterval(() => { void fileStore.reapStale(STALE_FILE_LEASE_MS); }, 60_000);

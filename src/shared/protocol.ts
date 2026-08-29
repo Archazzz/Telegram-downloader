@@ -45,3 +45,15 @@ export type WriterControlResponse = {
   };
   error?: string;
 };
+
+export type WriterLifecycleRequest = {
+  source: "telegram-media-downloader-bridge-lifecycle";
+  type: "writer:ping" | "writer:heartbeat" | "writer:disconnect";
+  ownerId: string;
+};
+
+export type WriterLifecycleResponse = {
+  source: "telegram-media-downloader-writer";
+  type: "writer:ready";
+  ownerId?: string;
+};
