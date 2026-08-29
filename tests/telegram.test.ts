@@ -85,6 +85,36 @@ describe("Telegram native media download", () => {
     expect(maximumActive).toBe(2);
   });
 
+  it("rotates Telegram queue ids so multiple large files receive network slots", async () => {
+    vi.useFakeTimers();
+    const setQueueId = vi.fn();
+    const resolvers: Array<() => void> = [];
+    const queueIds: number[] = [];
+    const downloadMedia = vi.fn((options: { queueId?: number }) => new Promise<Blob>((resolve) => {
+      queueIds.push(options.queueId ?? 0);
+      resolvers.push(() => resolve(new Blob(["video"], { type: "video/mp4" })));
+    }));
+    Object.assign(window, {
+      mtprotoMessagePort: {
+        getMessageByPeer: vi.fn().mockReturnValue({ media: { document: { mime_type: "video/mp4", size: 5 } } })
+      },
+      appDownloadManager: {
+        downloadMedia,
+        managers: { apiFileManager: { setQueueId } }
+      }
+    });
+
+    const first = downloadTelegramBlob(descriptor(), new AbortController().signal);
+    const second = downloadTelegramBlob(descriptor(), new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(450);
+    expect(queueIds).toHaveLength(2);
+    expect(new Set(queueIds).size).toBe(2);
+    expect(setQueueId.mock.calls.flat()).toEqual(expect.arrayContaining(queueIds));
+    resolvers.splice(0).forEach((resolve) => resolve());
+    await Promise.all([first, second]);
+    expect(setQueueId).toHaveBeenLastCalledWith(0);
+  });
+
   it("cancels a native task after an inactivity timeout", async () => {
     vi.useFakeTimers();
     const stalled = new Promise<Blob>(() => undefined) as Promise<Blob> & { cancel?: () => void };

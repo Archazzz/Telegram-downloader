@@ -30,8 +30,13 @@ type TelegramWindow = Window & typeof globalThis & {
     getMessageByPeer?: (peerId: string, mid: number) => TelegramMessage | undefined;
   };
   appDownloadManager?: {
-    downloadMedia?: (options: { media: TelegramMedia; thumb?: { w?: number; h?: number } }) => TelegramDownloadResult;
-    download?: (options: { media: TelegramMedia; thumb?: { w?: number; h?: number } }) => TelegramDownloadResult;
+    downloadMedia?: (options: { media: TelegramMedia; thumb?: { w?: number; h?: number }; queueId?: number }) => TelegramDownloadResult;
+    download?: (options: { media: TelegramMedia; thumb?: { w?: number; h?: number }; queueId?: number }) => TelegramDownloadResult;
+    managers?: {
+      apiFileManager?: {
+        setQueueId?: (queueId: number) => void;
+      };
+    };
   };
 };
 
@@ -41,6 +46,46 @@ export type TelegramBlob = {
   mimeType?: string;
   size: number;
 };
+
+let nextNativeQueueId = -1;
+let nativeQueueTimer = 0;
+let nativeQueueCursor = 0;
+const activeNativeQueues = new Set<number>();
+let nativeQueueController: { setQueueId?: (queueId: number) => void } | undefined;
+
+function rotateNativeQueue(): void {
+  const queueIds = [...activeNativeQueues];
+  if (queueIds.length === 0 || !nativeQueueController?.setQueueId) return;
+  nativeQueueCursor %= queueIds.length;
+  nativeQueueController.setQueueId(queueIds[nativeQueueCursor]!);
+  nativeQueueCursor = (nativeQueueCursor + 1) % queueIds.length;
+}
+
+function registerNativeQueue(manager: NonNullable<TelegramWindow["appDownloadManager"]>): { queueId?: number; release: () => void } {
+  const controller = manager.managers?.apiFileManager;
+  if (!controller?.setQueueId) return { release: () => undefined };
+  nativeQueueController = controller;
+  const queueId = nextNativeQueueId;
+  nextNativeQueueId = nextNativeQueueId <= -0x7fffffff ? -1 : nextNativeQueueId - 1;
+  activeNativeQueues.add(queueId);
+  rotateNativeQueue();
+  if (!nativeQueueTimer) nativeQueueTimer = window.setInterval(rotateNativeQueue, 150);
+  return {
+    queueId,
+    release: () => {
+      activeNativeQueues.delete(queueId);
+      if (activeNativeQueues.size > 0) {
+        rotateNativeQueue();
+        return;
+      }
+      window.clearInterval(nativeQueueTimer);
+      nativeQueueTimer = 0;
+      nativeQueueCursor = 0;
+      controller.setQueueId?.(0);
+      if (nativeQueueController === controller) nativeQueueController = undefined;
+    }
+  };
+}
 
 function abortError(): DOMException {
   return new DOMException("下载已取消", "AbortError");
@@ -86,8 +131,19 @@ export async function downloadTelegramBlob(
   if (!media || !manager || !download) return null;
 
   if (signal.aborted) throw abortError();
-  const options = { media, thumb: media.mime_type ? undefined : largestPhotoSize(media) };
-  const task = download.call(manager, options);
+  const nativeQueue = registerNativeQueue(manager);
+  const options = {
+    media,
+    thumb: media.mime_type ? undefined : largestPhotoSize(media),
+    ...(nativeQueue.queueId ? { queueId: nativeQueue.queueId } : {})
+  };
+  let task: TelegramDownloadResult;
+  try {
+    task = download.call(manager, options);
+  } catch (error) {
+    nativeQueue.release();
+    throw error;
+  }
   let inactivityTimeout = 0;
   let rejectAbort = (_error: DOMException): void => undefined;
   let rejectInactivity = (_error: Error): void => undefined;
@@ -126,5 +182,6 @@ export async function downloadTelegramBlob(
   } finally {
     window.clearTimeout(inactivityTimeout);
     signal.removeEventListener("abort", cancel);
+    nativeQueue.release();
   }
 }
