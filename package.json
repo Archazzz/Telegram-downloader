@@ -1,6 +1,6 @@
 {
   "name": "telegram-downloader-extension",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
   "type": "module",
   "description": "A privacy-first Telegram Web media downloader for Chrome.",
