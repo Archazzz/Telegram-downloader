@@ -44,11 +44,13 @@ const COLLAPSE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 1
 const RETRY_DELAYS = [1_000, 2_000, 4_000];
 const TELEGRAM_RETRY_DELAYS = [1_000, 2_000];
 const STREAM_INACTIVITY_TIMEOUT_MS = 60_000;
+const RESPONSE_TIMEOUT_MS = 60_000;
 const bridge = new BridgeClient();
 const mediaById = new Map<string, MediaDescriptor>();
 const groups = new Map<string, MessageGroup>();
 const groupIdByRoot = new WeakMap<HTMLElement, string>();
 const downloadItems = new Map<string, DownloadViewItem>();
+const queueRows = new Map<string, HTMLElement>();
 const pendingRoots = new Set<HTMLElement>();
 let scanScheduled = false;
 let queueRenderScheduled = false;
@@ -125,7 +127,11 @@ function setAttachmentState(mediaId: string, state: QueueState, detail?: string)
       : DOWNLOAD_ICON;
   }
   if (state === "success" || state === "cancelled") {
-    window.setTimeout(() => resetAttachmentState(mediaId), 2200);
+    window.setTimeout(() => {
+      const current = downloadItems.get(mediaId);
+      if (current && current.state !== state) return;
+      resetAttachmentState(mediaId);
+    }, 2200);
   }
 }
 
@@ -194,46 +200,55 @@ function queueActionButton(label: string, icon: string, action: () => void): HTM
   return button;
 }
 
-function renderQueueRow(item: DownloadViewItem): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "tmd-queue-row";
+function queueRowDetail(item: DownloadViewItem): string {
+  if (item.state === "queued") return "等待下载";
+  if (item.state === "cancelled") return "已取消";
+  if (item.state === "error") return item.detail ?? "下载失败";
+  if (item.state === "success") return "下载完成";
+  const progress = item.total > 0
+    ? `${formatBytes(item.written)} / ${formatBytes(item.total)} (${Math.round(item.written / item.total * 100)}%)`
+    : `${formatBytes(item.written)}`;
+  const transfer = item.state === "running" && item.speedBytesPerSecond > 0 ? ` · ${formatSpeed(item.speedBytesPerSecond)}` : "";
+  const phase = item.phase ? ` · ${item.phase}` : "";
+  return item.state === "paused" ? `已暂停 · ${progress}${phase}` : `${progress}${transfer}${phase}`;
+}
+
+function queueActionSignature(item: DownloadViewItem): string {
+  return `${item.state}:${item.canPause}`;
+}
+
+function updateQueueRow(row: HTMLElement, item: DownloadViewItem): void {
   row.dataset.state = item.state;
-
-  const preview = document.createElement("div");
-  preview.className = "tmd-queue-preview";
-  if (item.thumbnailUrl) {
-    const image = document.createElement("img");
-    image.src = item.thumbnailUrl;
-    image.alt = "";
-    preview.appendChild(image);
-  } else {
-    preview.innerHTML = DOWNLOAD_ICON;
+  const preview = row.querySelector<HTMLElement>("[data-role='preview']")!;
+  if (preview.dataset.thumbnail !== item.thumbnailUrl) {
+    preview.dataset.thumbnail = item.thumbnailUrl;
+    preview.replaceChildren();
+    if (item.thumbnailUrl) {
+      const image = document.createElement("img");
+      image.src = item.thumbnailUrl;
+      image.alt = "";
+      preview.appendChild(image);
+    } else {
+      preview.innerHTML = DOWNLOAD_ICON;
+    }
   }
+  row.querySelector<HTMLElement>("[data-role='name']")!.textContent = item.fileName;
+  row.querySelector<HTMLElement>("[data-role='detail']")!.textContent = queueRowDetail(item);
+  const track = row.querySelector<HTMLElement>("[data-role='progress']")!;
+  const percent = item.total > 0 ? Math.min(100, item.written / item.total * 100) : 0;
+  track.classList.toggle("is-indeterminate", item.total <= 0 && item.state === "running");
+  track.setAttribute("aria-valuemin", "0");
+  track.setAttribute("aria-valuemax", "100");
+  if (item.total > 0) track.setAttribute("aria-valuenow", String(Math.round(percent)));
+  else track.removeAttribute("aria-valuenow");
+  track.setAttribute("aria-valuetext", item.total > 0 ? `${Math.round(percent)}%` : `${formatBytes(item.written)}，总大小未知`);
+  track.querySelector<HTMLElement>("i")!.style.width = item.total > 0 ? `${percent}%` : item.state === "running" ? "28%" : "0%";
 
-  const content = document.createElement("div");
-  content.className = "tmd-queue-row-content";
-  const name = document.createElement("strong");
-  name.textContent = item.fileName;
-  const detail = document.createElement("span");
-  if (item.state === "queued") detail.textContent = "等待下载";
-  else if (item.state === "cancelled") detail.textContent = "已取消";
-  else if (item.state === "error") detail.textContent = item.detail ?? "下载失败";
-  else if (item.state === "success") detail.textContent = "下载完成";
-  else {
-    const progress = item.total > 0 ? `${formatBytes(item.written)} / ${formatBytes(item.total)} (${Math.round(item.written / item.total * 100)}%)` : `${formatBytes(item.written)}`;
-    const transfer = item.state === "running" && item.speedBytesPerSecond > 0 ? ` · ${formatSpeed(item.speedBytesPerSecond)}` : "";
-    const phase = item.phase ? ` · ${item.phase}` : "";
-    detail.textContent = item.state === "paused" ? `已暂停 · ${progress}${phase}` : `${progress}${transfer}${phase}`;
-  }
-  const track = document.createElement("div");
-  track.className = "tmd-queue-progress";
-  const fill = document.createElement("i");
-  fill.style.width = item.total > 0 ? `${Math.min(100, item.written / item.total * 100)}%` : item.state === "running" ? "28%" : "0%";
-  track.appendChild(fill);
-  content.append(name, detail, track);
-
-  const actions = document.createElement("div");
-  actions.className = "tmd-queue-row-actions";
+  const actions = row.querySelector<HTMLElement>("[data-role='actions']")!;
+  const signature = queueActionSignature(item);
+  if (actions.dataset.signature === signature) return;
+  actions.dataset.signature = signature;
+  actions.replaceChildren();
   if (item.state === "running" && item.canPause) actions.appendChild(queueActionButton("暂停", PAUSE_ICON, () => queue.pause(item.id)));
   if (item.state === "paused") actions.appendChild(queueActionButton("继续", PLAY_ICON, () => queue.resume(item.id)));
   if (item.state === "queued" || item.state === "running" || item.state === "paused") {
@@ -243,18 +258,62 @@ function renderQueueRow(item: DownloadViewItem): HTMLElement {
     actions.appendChild(queueActionButton("重试", RETRY_ICON, () => retryDownload(item.id)));
     actions.appendChild(queueActionButton("清除此失败任务", CLOSE_ICON, () => removeDownloadItem(item.id)));
   }
+}
+
+function renderQueueRow(item: DownloadViewItem): HTMLElement {
+  const existing = queueRows.get(item.id);
+  if (existing) {
+    updateQueueRow(existing, item);
+    return existing;
+  }
+  const row = document.createElement("div");
+  row.className = "tmd-queue-row";
+  row.dataset.mediaId = item.id;
+
+  const preview = document.createElement("div");
+  preview.className = "tmd-queue-preview";
+  preview.dataset.role = "preview";
+
+  const content = document.createElement("div");
+  content.className = "tmd-queue-row-content";
+  const name = document.createElement("strong");
+  name.dataset.role = "name";
+  const detail = document.createElement("span");
+  detail.dataset.role = "detail";
+  const track = document.createElement("div");
+  track.className = "tmd-queue-progress";
+  track.dataset.role = "progress";
+  track.setAttribute("role", "progressbar");
+  const fill = document.createElement("i");
+  track.appendChild(fill);
+  content.append(name, detail, track);
+
+  const actions = document.createElement("div");
+  actions.className = "tmd-queue-row-actions";
+  actions.dataset.role = "actions";
   row.append(preview, content, actions);
+  queueRows.set(item.id, row);
+  updateQueueRow(row, item);
   return row;
 }
 
-function queueSection(title: string, items: DownloadViewItem[]): HTMLElement {
+function createQueueSection(kind: string): HTMLElement {
   const section = document.createElement("section");
   section.className = "tmd-queue-section";
+  section.dataset.section = kind;
   const heading = document.createElement("h3");
-  heading.textContent = `${title} ${items.length}`;
   section.appendChild(heading);
-  items.forEach((item) => section.appendChild(renderQueueRow(item)));
   return section;
+}
+
+function syncQueueSection(section: HTMLElement, title: string, items: DownloadViewItem[]): void {
+  section.hidden = items.length === 0;
+  section.querySelector("h3")!.textContent = `${title} ${items.length}`;
+  const retained = new Set(items.map((item) => item.id));
+  for (const row of section.querySelectorAll<HTMLElement>(".tmd-queue-row")) {
+    if (!row.dataset.mediaId || !retained.has(row.dataset.mediaId)) row.remove();
+  }
+  for (const item of items) section.appendChild(renderQueueRow(item));
 }
 
 function queueTextButton(label: string, action: () => void): HTMLButtonElement {
@@ -308,15 +367,39 @@ function renderQueuePanel(): void {
   let panel = document.querySelector<HTMLElement>(".tmd-queue-panel");
   if (items.length === 0) {
     panel?.remove();
+    queueRows.clear();
     return;
   }
   if (!panel) {
     panel = document.createElement("aside");
     panel.className = "tmd-queue-panel";
     panel.setAttribute("aria-label", "下载队列");
+    const header = document.createElement("header");
+    const headingWrap = document.createElement("div");
+    const heading = document.createElement("h2");
+    heading.dataset.role = "queue-heading";
+    const summary = document.createElement("span");
+    summary.dataset.role = "queue-summary";
+    headingWrap.append(heading, summary);
+    const collapse = queueActionButton("收起下载队列", COLLAPSE_ICON, () => {
+      queueCollapsed = !queueCollapsed;
+      scheduleQueueRender();
+    });
+    collapse.classList.add("tmd-queue-collapse");
+    collapse.dataset.role = "queue-collapse";
+    header.append(headingWrap, collapse);
+    const toolbar = document.createElement("div");
+    toolbar.className = "tmd-queue-toolbar";
+    toolbar.dataset.role = "queue-toolbar";
+    panel.append(
+      header,
+      toolbar,
+      createQueueSection("running"),
+      createQueueSection("waiting"),
+      createQueueSection("terminal")
+    );
     document.body.appendChild(panel);
   }
-  panel.replaceChildren();
   panel.classList.toggle("collapsed", queueCollapsed);
 
   const running = items.filter((item) => item.state === "running" || item.state === "paused");
@@ -326,38 +409,48 @@ function renderQueuePanel(): void {
   const writtenBytes = items.reduce((sum, item) => sum + Math.min(item.written, item.total || item.written), 0);
   const aggregateSpeed = running.reduce((sum, item) => sum + item.speedBytesPerSecond, 0);
 
-  const header = document.createElement("header");
-  const headingWrap = document.createElement("div");
-  const heading = document.createElement("h2");
-  heading.textContent = running.length > 0 ? "下载中" : waiting.length > 0 ? "等待下载" : "下载队列";
-  const summary = document.createElement("span");
-  summary.textContent = totalBytes > 0
+  panel.querySelector<HTMLElement>("[data-role='queue-heading']")!.textContent = running.length > 0 ? "下载中" : waiting.length > 0 ? "等待下载" : "下载队列";
+  panel.querySelector<HTMLElement>("[data-role='queue-summary']")!.textContent = totalBytes > 0
     ? `总进度：${formatBytes(writtenBytes)} / ${formatBytes(totalBytes)} (${Math.round(writtenBytes / totalBytes * 100)}%)${aggregateSpeed > 0 ? ` · ${formatSpeed(aggregateSpeed)}` : ""}`
     : `${running.length} 个进行中 · ${waiting.length} 个等待`;
-  headingWrap.append(heading, summary);
-  const collapse = queueActionButton(queueCollapsed ? "展开下载队列" : "收起下载队列", COLLAPSE_ICON, () => {
-    queueCollapsed = !queueCollapsed;
-    scheduleQueueRender();
-  });
-  collapse.classList.add("tmd-queue-collapse");
-  header.append(headingWrap, collapse);
-  panel.appendChild(header);
-
-  if (queueCollapsed) return;
-  const toolbar = document.createElement("div");
-  toolbar.className = "tmd-queue-toolbar";
+  const collapse = panel.querySelector<HTMLButtonElement>("[data-role='queue-collapse']")!;
+  const collapseLabel = queueCollapsed ? "展开下载队列" : "收起下载队列";
+  collapse.title = collapseLabel;
+  collapse.setAttribute("aria-label", collapseLabel);
+  const toolbar = panel.querySelector<HTMLElement>("[data-role='queue-toolbar']")!;
   const pausable = running.filter((item) => item.state === "running" && item.canPause).map((item) => item.id);
   const paused = running.filter((item) => item.state === "paused").map((item) => item.id);
   const cancellable = [...running, ...waiting].map((item) => item.id);
   const completed = terminal.filter((item) => item.state === "success" || item.state === "cancelled");
-  if (pausable.length > 0) toolbar.appendChild(queueTextButton("暂停全部", () => queue.pauseAll(pausable)));
-  if (paused.length > 0) toolbar.appendChild(queueTextButton("继续全部", () => queue.resumeAll(paused)));
-  if (cancellable.length > 0) toolbar.appendChild(queueTextButton("取消全部", () => queue.cancelAll(cancellable)));
-  if (completed.length > 0) toolbar.appendChild(queueTextButton("清除完成", clearCompletedDownloads));
-  if (toolbar.childElementCount > 0) panel.appendChild(toolbar);
-  if (running.length > 0) panel.appendChild(queueSection("正在下载", running));
-  if (waiting.length > 0) panel.appendChild(queueSection("等待中", waiting));
-  if (terminal.length > 0) panel.appendChild(queueSection("最近状态", terminal));
+  const toolbarActions = [
+    pausable.length > 0 ? { key: `pause:${pausable.join(",")}`, label: "暂停全部", action: () => queue.pauseAll(pausable) } : null,
+    paused.length > 0 ? { key: `resume:${paused.join(",")}`, label: "继续全部", action: () => queue.resumeAll(paused) } : null,
+    cancellable.length > 0 ? { key: `cancel:${cancellable.join(",")}`, label: "取消全部", action: () => queue.cancelAll(cancellable) } : null,
+    completed.length > 0 ? { key: `clear:${completed.map((item) => item.id).join(",")}`, label: "清除完成", action: clearCompletedDownloads } : null
+  ].filter((item): item is { key: string; label: string; action: () => unknown } => Boolean(item));
+  const toolbarSignature = toolbarActions.map((item) => item.key).join("|");
+  if (toolbar.dataset.signature !== toolbarSignature) {
+    toolbar.dataset.signature = toolbarSignature;
+    toolbar.replaceChildren(...toolbarActions.map((item) => queueTextButton(item.label, item.action)));
+  }
+  toolbar.hidden = queueCollapsed || toolbarActions.length === 0;
+
+  const runningSection = panel.querySelector<HTMLElement>("[data-section='running']")!;
+  const waitingSection = panel.querySelector<HTMLElement>("[data-section='waiting']")!;
+  const terminalSection = panel.querySelector<HTMLElement>("[data-section='terminal']")!;
+  if (queueCollapsed) {
+    runningSection.hidden = true;
+    waitingSection.hidden = true;
+    terminalSection.hidden = true;
+  } else {
+    syncQueueSection(runningSection, "正在下载", running);
+    syncQueueSection(waitingSection, "等待中", waiting);
+    syncQueueSection(terminalSection, "最近状态", terminal);
+  }
+  const retainedIds = new Set(items.map((item) => item.id));
+  for (const id of queueRows.keys()) {
+    if (!retainedIds.has(id)) queueRows.delete(id);
+  }
 }
 
 function enqueueMedia(media: MediaDescriptor, batchTracker?: (state: QueueState) => void): boolean {
@@ -431,6 +524,9 @@ function decorateBatch(group: MessageGroup): void {
     actions.appendChild(button);
   }
   button.innerHTML = `${DOWNLOAD_ICON}<span>下载本消息全部 ${group.mediaIds.length} 项</span>`;
+  const batchButton = button;
+  const batchLabel = batchButton.querySelector<HTMLElement>("span");
+  if (!batchLabel) return;
   button.onclick = (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -439,18 +535,18 @@ function decorateBatch(group: MessageGroup): void {
     const update = (state: QueueState) => {
       progress.record(state);
       const summary = progress.summary();
-      button!.dataset.state = summary.state;
-      button!.disabled = !summary.done;
-      button!.querySelector("span")!.textContent = summary.label;
+      batchButton.dataset.state = summary.state;
+      batchButton.disabled = !summary.done;
+      batchLabel.textContent = summary.label;
     };
     for (const media of snapshot) {
       if (enqueueMedia(media, update)) progress.accept();
     }
     if (progress.total === 0) showToast("这些文件已在下载队列中");
     else {
-      button!.dataset.state = "running";
-      button!.disabled = true;
-      button!.querySelector("span")!.textContent = `下载中 0/${progress.total}`;
+      batchButton.dataset.state = "running";
+      batchButton.disabled = true;
+      batchLabel.textContent = `下载中 0/${progress.total}`;
     }
   };
 }
@@ -544,7 +640,12 @@ async function streamResponse(
 ): Promise<number> {
   if (!response.body) {
     await control.waitIfPaused();
-    const buffer = new Uint8Array(await response.arrayBuffer());
+    const buffer = new Uint8Array(await withAbortableTimeout(
+      response.arrayBuffer(),
+      STREAM_INACTIVITY_TIMEOUT_MS,
+      control.signal,
+      new DownloadError("媒体响应 60 秒没有返回数据，请检查 VPN 或网络后重试", "NETWORK_STALLED")
+    ));
     if (control.isCancelled) throw new DOMException("下载已取消", "AbortError");
     await bridge.writeChunk(fileRequestId, buffer);
     onProgress(buffer.byteLength);
@@ -577,6 +678,27 @@ async function streamResponse(
   return written;
 }
 
+async function fetchWithResponseTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  control: QueueControl
+): Promise<Response> {
+  const controller = new AbortController();
+  const cancel = (): void => controller.abort();
+  control.signal.addEventListener("abort", cancel, { once: true });
+  try {
+    return await withAbortableTimeout(
+      fetch(input, { ...init, signal: controller.signal }),
+      RESPONSE_TIMEOUT_MS,
+      control.signal,
+      new DownloadError("媒体服务器 60 秒没有响应，请检查 VPN 或网络后重试", "NETWORK_STALLED"),
+      () => controller.abort()
+    );
+  } finally {
+    control.signal.removeEventListener("abort", cancel);
+  }
+}
+
 async function fetchIntoFile(
   media: MediaDescriptor,
   requestId: string,
@@ -586,7 +708,7 @@ async function fetchIntoFile(
   if (/^(blob:|data:)/.test(media.url)) {
     let response: Response;
     try {
-      response = await fetch(media.url, { signal: control.signal });
+      response = await fetchWithResponseTimeout(media.url, {}, control);
     } catch (error) {
       if (media.url.startsWith("blob:") && !isAbortError(error)) {
         throw new DownloadError("媒体地址已失效，请让该消息重新进入视口后重试", "STALE_MEDIA_URL", { cause: error });
@@ -606,7 +728,11 @@ async function fetchIntoFile(
   let total = media.size ?? 0;
   for (;;) {
     await control.waitIfPaused();
-    const response = await fetch(media.url, { headers: { Range: `bytes=${offset}-` }, credentials: "include", signal: control.signal });
+    const response = await fetchWithResponseTimeout(
+      media.url,
+      { headers: { Range: `bytes=${offset}-` }, credentials: "include" },
+      control
+    );
     const range = validateRangeResponse(offset, response.status, response.headers.get("Content-Range"));
     if (range) {
       total = range.total;
@@ -616,9 +742,12 @@ async function fetchIntoFile(
     const before = offset;
     const written = await streamResponse(response, requestId, control, (chunkWritten) => onProgress(before + chunkWritten, total));
     offset += written;
-    if (written <= 0) throw new Error("下载已停滞，未收到新的媒体数据");
+    if (written <= 0) {
+      if (total === 0) break;
+      throw new DownloadError("媒体流没有返回完整数据，请检查网络后重试", "NETWORK_STALLED");
+    }
     if (!range || response.status === 200 || offset >= total) break;
-    if (offset !== range.end + 1) throw new Error("下载分块长度与服务器声明不一致");
+    if (offset !== range.end + 1) throw new DownloadError("服务器返回的媒体分块不完整，请稍后重试", "INVALID_RANGE");
   }
 }
 
@@ -676,8 +805,8 @@ async function downloadTelegramWithRetry(media: MediaDescriptor, control: QueueC
 async function downloadWithRetry(media: MediaDescriptor, control: QueueControl): Promise<void> {
   const status = await bridge.status();
   queue.setConcurrency(status.concurrency);
-  if (!status.folderName) throw new Error("请点击扩展图标并选择下载目录");
-  if (status.permission !== "granted") throw new Error("下载目录需要重新授权，请点击扩展图标后重新授权一次");
+  if (!status.folderName) throw new DownloadError("请点击扩展图标并选择下载目录", "DIRECTORY_MISSING");
+  if (status.permission !== "granted") throw new DownloadError("下载目录需要重新授权，请点击扩展图标后重新授权一次", "DIRECTORY_PERMISSION");
 
   let resolvedMedia = media;
   let telegramBlob: TelegramBlob | null = null;
@@ -775,7 +904,11 @@ async function downloadWithRetry(media: MediaDescriptor, control: QueueControl):
           updateDownloadProgress(media.id, completedItem.written, completedItem.total, "正在完成");
           setAttachmentState(media.id, "running", "正在完成文件写入…");
         }
-        await bridge.closeFile(requestId);
+        const expectedBytes = completedItem && completedItem.total > 0 ? completedItem.total : completedItem?.written;
+        const committedBytes = await bridge.closeFile(requestId, expectedBytes);
+        if (expectedBytes !== undefined && expectedBytes > 0 && committedBytes !== expectedBytes) {
+          throw new DownloadError("文件写入结果与媒体大小不一致，已停止保存并准备重试", "WRITE_INTEGRITY");
+        }
         return;
       } catch (error) {
         const normalized = normalizeDownloadError(error);

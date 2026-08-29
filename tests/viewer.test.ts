@@ -61,6 +61,25 @@ describe("Telegram video viewer resolver", () => {
     expect(revealed.url).toBe("blob:https://web.telegram.org/inline-video");
   });
 
+  it("chooses the changed video closest to the requested attachment when several videos load", async () => {
+    const { media, play } = unloadedVideo();
+    const unrelated = document.createElement("section");
+    document.body.prepend(unrelated);
+    play.addEventListener("click", () => {
+      const farVideo = document.createElement("video");
+      farVideo.src = "blob:https://web.telegram.org/far-video";
+      unrelated.appendChild(farVideo);
+      const nearby = document.createElement("div");
+      const nearVideo = document.createElement("video");
+      nearVideo.src = "blob:https://web.telegram.org/near-video";
+      nearby.appendChild(nearVideo);
+      media.host.parentElement?.appendChild(nearby);
+    });
+
+    const revealed = await revealVideoSource(media, undefined, 100);
+    expect(revealed.url).toBe("blob:https://web.telegram.org/near-video");
+  });
+
   it("does not return the poster URL when Telegram never loads a video", async () => {
     vi.useFakeTimers();
     const { media } = unloadedVideo();

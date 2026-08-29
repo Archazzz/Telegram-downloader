@@ -28,6 +28,14 @@ function cancelledError(): DOMException {
   return new DOMException("下载已取消", "AbortError");
 }
 
+function notifyState<T>(managed: ManagedTask<T>, state: QueueState, detail?: string): void {
+  try {
+    managed.task.onState?.(state, detail);
+  } catch {
+    // UI observers must never consume a queue slot or interrupt draining.
+  }
+}
+
 export class DownloadQueue<T> {
   private readonly pending: ManagedTask<T>[] = [];
   private readonly tasks = new Map<string, ManagedTask<T>>();
@@ -67,7 +75,7 @@ export class DownloadQueue<T> {
     };
     this.tasks.set(task.key, managed);
     this.pending.push(managed);
-    task.onState?.("queued");
+    notifyState(managed, "queued");
     this.drain();
     return true;
   }
@@ -81,7 +89,7 @@ export class DownloadQueue<T> {
     if (!managed || managed.state !== "running" || managed.cancelled) return false;
     managed.paused = true;
     managed.state = "paused";
-    managed.task.onState?.("paused");
+    notifyState(managed, "paused");
     return true;
   }
 
@@ -92,7 +100,7 @@ export class DownloadQueue<T> {
     managed.state = "running";
     for (const resolve of managed.resumeWaiters) resolve();
     managed.resumeWaiters.clear();
-    managed.task.onState?.("running");
+    notifyState(managed, "running");
     return true;
   }
 
@@ -127,11 +135,11 @@ export class DownloadQueue<T> {
       const index = this.pending.indexOf(managed);
       if (index >= 0) this.pending.splice(index, 1);
       this.tasks.delete(key);
-      managed.task.onState?.("cancelled");
+      notifyState(managed, "cancelled");
       return true;
     }
 
-    managed.task.onState?.("cancelled");
+    notifyState(managed, "cancelled");
     return true;
   }
 
@@ -155,16 +163,16 @@ export class DownloadQueue<T> {
       if (!managed || managed.cancelled) continue;
       this.running += 1;
       managed.state = "running";
-      managed.task.onState?.("running");
+      notifyState(managed, "running");
       const control = this.controlFor(managed);
       void this.runner(managed.task, control)
         .then(() => {
-          if (!managed.cancelled) managed.task.onState?.("success");
+          if (!managed.cancelled) notifyState(managed, "success");
         })
         .catch((error: unknown) => {
           if (managed.cancelled || (error instanceof DOMException && error.name === "AbortError")) return;
           const message = error instanceof Error ? error.message : String(error);
-          managed.task.onState?.("error", message);
+          notifyState(managed, "error", message);
         })
         .finally(() => {
           this.running -= 1;

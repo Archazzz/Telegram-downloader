@@ -16,6 +16,13 @@ describe("download error normalization", () => {
     });
   });
 
+  it("translates files locked by another process", () => {
+    expect(normalizeDownloadError(new DOMException("locked", "NoModificationAllowedError"))).toMatchObject({
+      code: "FILESYSTEM_UNAVAILABLE",
+      message: "下载目录或目标磁盘已不可用，请重新选择下载目录"
+    });
+  });
+
   it("classifies full disks without exposing the browser exception", () => {
     expect(normalizeDownloadError(new DOMException("quota", "QuotaExceededError"))).toMatchObject({
       code: "DISK_FULL",

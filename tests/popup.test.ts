@@ -59,4 +59,21 @@ describe("popup UI", () => {
     await vi.waitFor(() => expect(document.getElementById("media-detail")?.textContent).toContain("2 失败"));
     expect(document.querySelector(".live-dot")?.classList.contains("is-connected")).toBe(true);
   });
+
+  it("renders fallback content when storage and runtime calls fail", async () => {
+    mocks.getDestinationStatus.mockRejectedValueOnce(new DOMException("database unavailable", "InvalidStateError"));
+    mocks.getSettings.mockRejectedValueOnce(new Error("settings unavailable"));
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn().mockRejectedValue(new Error("service worker unavailable")),
+        onMessage: { addListener: vi.fn() }
+      }
+    });
+    const { initPopup } = await import("../src/popup/popup");
+    initPopup();
+
+    await vi.waitFor(() => expect(document.getElementById("media-count")?.textContent).toBe("页面状态暂不可用"));
+    expect(document.getElementById("folder-name")?.textContent).toBe("下载目录暂不可用");
+    expect(document.getElementById("concurrency-options")?.textContent).toBe("并发设置暂不可用");
+  });
 });

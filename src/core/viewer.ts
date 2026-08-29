@@ -21,6 +21,26 @@ function videoTrigger(media: MediaDescriptor, root: HTMLElement): HTMLElement {
     ?? media.element;
 }
 
+function domDistance(from: Node, to: Node): number {
+  const ancestors = new Map<Node, number>();
+  let current: Node | null = from;
+  let distance = 0;
+  while (current) {
+    ancestors.set(current, distance);
+    current = current.parentNode;
+    distance += 1;
+  }
+  current = to;
+  distance = 0;
+  while (current) {
+    const sharedDistance = ancestors.get(current);
+    if (sharedDistance !== undefined) return sharedDistance + distance;
+    current = current.parentNode;
+    distance += 1;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
 export type RevealedVideoSource = {
   url: string;
   dismiss: () => void;
@@ -87,7 +107,9 @@ export function revealVideoSource(
         if (isOriginalMedia || (isViewerMedia && (isNewVideo || sourceChanged))) return { url, video };
         if (isNewVideo || sourceChanged) changedVideos.push({ url, video });
       }
-      return changedVideos.length === 1 ? changedVideos[0]! : null;
+      if (changedVideos.length === 0) return null;
+      changedVideos.sort((left, right) => domDistance(root, left.video) - domDistance(root, right.video));
+      return changedVideos[0]!;
     };
     const inspect = (): void => {
       const url = findSource();

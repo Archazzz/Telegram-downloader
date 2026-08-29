@@ -69,6 +69,7 @@
 .tmd-queue-toolbar { display: flex !important; flex-wrap: wrap !important; gap: 6px !important; padding: 10px 16px !important; border-bottom: 1px solid rgba(112,152,194,.18) !important; }
 .tmd-queue-text-button { min-height: 28px !important; padding: 5px 9px !important; border: 1px solid rgba(103,149,194,.25) !important; border-radius: 9px !important; color: #3e5873 !important; background: rgba(255,255,255,.58) !important; font: 650 11px/1.2 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif !important; cursor: pointer !important; }
 .tmd-queue-text-button:hover { color: #0876d1 !important; background: rgba(232,246,255,.9) !important; }
+.tmd-queue-text-button:focus-visible { outline: 3px solid rgba(10,132,255,.26) !important; outline-offset: 1px !important; }
 
 .tmd-queue-section { padding: 12px 16px 4px !important; }
 .tmd-queue-section + .tmd-queue-section { border-top: 1px solid rgba(112,152,194,.18) !important; }
@@ -82,6 +83,8 @@
 .tmd-queue-row-content span { display: block !important; margin-top: 4px !important; color: #64748b !important; font-size: 10px !important; line-height: 1.25 !important; }
 .tmd-queue-progress { height: 4px !important; margin-top: 6px !important; overflow: hidden !important; border-radius: 999px !important; background: rgba(102,148,194,.14) !important; }
 .tmd-queue-progress i { display: block !important; height: 100% !important; border-radius: inherit !important; background: #0a84ff !important; transition: width .18s ease !important; }
+.tmd-queue-progress.is-indeterminate i { animation: tmd-indeterminate 1.15s ease-in-out infinite !important; }
+@keyframes tmd-indeterminate { 0% { transform: translateX(-120%); } 50% { transform: translateX(130%); } 100% { transform: translateX(340%); } }
 .tmd-queue-row[data-state="paused"] .tmd-queue-progress i { background: #f59e0b !important; }
 .tmd-queue-row[data-state="success"] .tmd-queue-progress i { width: 100% !important; background: #28a164 !important; }
 .tmd-queue-row[data-state="error"] .tmd-queue-progress i { background: #d14b4b !important; }
@@ -96,4 +99,7 @@
 @media (max-width: 560px) {
   .tmd-queue-panel { top: 62px !important; right: 8px !important; width: calc(100vw - 16px) !important; max-height: calc(100vh - 76px) !important; }
 }
-@media (prefers-reduced-motion: reduce) { .tmd-download-button { transition: none !important; } }
+@media (prefers-reduced-motion: reduce) {
+  .tmd-download-button { transition: none !important; }
+  .tmd-queue-progress.is-indeterminate i { animation: none !important; }
+}

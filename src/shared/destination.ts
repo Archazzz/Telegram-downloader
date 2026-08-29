@@ -35,8 +35,16 @@ function openDatabase(): Promise<IDBDatabase> {
 async function withStore<T>(mode: IDBTransactionMode, operation: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   const database = await openDatabase();
   return new Promise((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, mode);
-    const request = operation(transaction.objectStore(STORE_NAME));
+    let transaction: IDBTransaction;
+    let request: IDBRequest<T>;
+    try {
+      transaction = database.transaction(STORE_NAME, mode);
+      request = operation(transaction.objectStore(STORE_NAME));
+    } catch (error) {
+      database.close();
+      reject(error);
+      return;
+    }
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error("下载目录数据库操作失败"));
     transaction.oncomplete = () => database.close();

@@ -50,6 +50,15 @@ describe("DownloadQueue", () => {
     gate.resolve();
   });
 
+  it("keeps draining when a UI state observer throws", async () => {
+    const completed: number[] = [];
+    const queue = new DownloadQueue<number>(async ({ value }) => { completed.push(value); }, 1);
+    queue.enqueue({ key: "first", value: 1, onState: () => { throw new Error("broken UI"); } });
+    queue.enqueue({ key: "second", value: 2, onState: () => { throw new Error("broken UI"); } });
+    await vi.waitFor(() => expect(queue.activeCount + queue.queuedCount).toBe(0));
+    expect(completed).toEqual([1, 2]);
+  });
+
   it("pauses and resumes an active task cooperatively", async () => {
     const beforeChunk = deferred();
     const states: string[] = [];

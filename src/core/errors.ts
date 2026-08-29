@@ -1,5 +1,6 @@
 export type DownloadErrorCode =
   | "BRIDGE_UNAVAILABLE"
+  | "BRIDGE_TIMEOUT"
   | "DISK_FULL"
   | "DIRECTORY_MISSING"
   | "DIRECTORY_PERMISSION"
@@ -10,6 +11,7 @@ export type DownloadErrorCode =
   | "NETWORK"
   | "NETWORK_STALLED"
   | "STALE_MEDIA_URL"
+  | "WRITE_INTEGRITY"
   | "WRITER_CAPACITY";
 
 export class DownloadError extends Error {
@@ -33,7 +35,7 @@ export function normalizeDownloadError(error: unknown): Error {
     if (error.name === "QuotaExceededError") {
       return new DownloadError("目标磁盘空间不足，请清理空间或更换下载目录", "DISK_FULL", { cause: error });
     }
-    if (["NotFoundError", "NotReadableError", "InvalidStateError"].includes(error.name)) {
+    if (["NotFoundError", "NotReadableError", "InvalidStateError", "NoModificationAllowedError"].includes(error.name)) {
       return new DownloadError("下载目录或目标磁盘已不可用，请重新选择下载目录", "FILESYSTEM_UNAVAILABLE", { cause: error });
     }
     if (["NotAllowedError", "SecurityError"].includes(error.name)) {

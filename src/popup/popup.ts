@@ -69,11 +69,31 @@ async function renderStats(): Promise<void> {
   document.querySelector(".live-dot")?.classList.add("is-connected");
 }
 
+function renderDestinationFallback(error: unknown): void {
+  element("folder-name").textContent = "下载目录暂不可用";
+  element("folder-status").textContent = normalizeDownloadError(error).message;
+  element<HTMLButtonElement>("choose-folder").textContent = "重试";
+}
+
+function renderSettingsFallback(): void {
+  const container = element("concurrency-options");
+  container.replaceChildren();
+  container.textContent = "并发设置暂不可用";
+}
+
+function renderStatsFallback(): void {
+  element("media-count").textContent = "页面状态暂不可用";
+  element("media-detail").textContent = "请保持 Telegram 页面打开后重试";
+  document.querySelector(".live-dot")?.classList.remove("is-connected");
+}
+
 export function initPopup(): void {
-  void Promise.all([renderDestination(), renderSettings(), renderStats()]);
+  void renderDestination().catch(renderDestinationFallback);
+  void renderSettings().catch(renderSettingsFallback);
+  void renderStats().catch(renderStatsFallback);
   chrome.runtime.onMessage.addListener((message: unknown) => {
     const typed = message as { type?: string };
-    if (typed.type === "page-stats-updated") void renderStats();
+    if (typed.type === "page-stats-updated") void renderStats().catch(renderStatsFallback);
     return false;
   });
   element<HTMLButtonElement>("choose-folder").addEventListener("click", async () => {
